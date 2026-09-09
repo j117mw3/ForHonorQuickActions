@@ -7,7 +7,7 @@ A fast, mouse-only Windows utility for players who need to close or restart For 
 - When **For Honor is running**: **Close For Honor**, **Close and reopen For Honor**, and **Clean restart** are shown.
 - When **For Honor is not running**: **Open For Honor** and **Clean restart** are shown. **Open For Honor** starts the game and the utility switches to the three running-game controls as soon as `forhonor.exe` appears.
 
-The utility stays open for every action and only closes when the player closes its window. `Logo.png` is embedded in the app window and compiled into the EXE icon.
+The utility stays open for every action and only closes when the player closes its window. It uses a borderless, draggable custom title strip with a fade-out close animation. `Logo.png` is compiled into the EXE and taskbar icon.
 
 The app automatically searches the saved game location, Steam libraries (including extra Steam library drives), Ubisoft Connect registry entries, and common folders on every fixed drive—including paths such as `F:\ForHonor\forhonor.exe`. If it cannot find the game, use the **Game location** button once to choose `forhonor.exe`; the selection is saved in the current user's local app-data folder and remains available after the app is closed and reopened.
 

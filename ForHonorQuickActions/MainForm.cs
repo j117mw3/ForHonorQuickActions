@@ -4,7 +4,7 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Drawing;
-using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 
 namespace ForHonorQuickActions
 {
@@ -16,29 +16,66 @@ internal sealed class MainForm : Form
     private readonly Button restartButton;
     private readonly Button cleanRestartButton;
     private readonly Button locateButton;
+    private readonly Button closeAppButton;
     private readonly Timer gameStateTimer;
     private bool isRunning;
     private bool gameIsRunning;
     private bool waitingForGameStart;
+    private bool isFadingOut;
+
+    private const int WmNclButtonDown = 0xA1;
+    private const int HtCaption = 0x2;
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     public MainForm()
     {
         Text = "For Honor Quick Actions";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        MinimizeBox = false;
+        FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(430, 335);
+        ClientSize = new Size(430, 345);
         BackColor = Color.FromArgb(19, 22, 29);
         Font = new Font("Segoe UI", 10F);
+        DoubleBuffered = true;
 
-        var logo = new PictureBox
+        var titleBar = new Panel
         {
-            Image = LoadLogo(),
-            SizeMode = PictureBoxSizeMode.Zoom,
-            Location = new Point(27, 17),
-            Size = new Size(59, 59)
+            BackColor = Color.FromArgb(24, 28, 36),
+            Location = new Point(0, 0),
+            Size = new Size(430, 36)
+        };
+        var appName = new Label
+        {
+            Text = "FOR HONOR QUICK ACTIONS",
+            ForeColor = Color.FromArgb(151, 161, 178),
+            Font = new Font("Segoe UI Semibold", 8.5F),
+            AutoSize = false,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(14, 0),
+            Size = new Size(300, 36)
+        };
+        closeAppButton = new Button
+        {
+            Text = "×",
+            FlatStyle = FlatStyle.Flat,
+            FlatAppearance =
+            {
+                BorderSize = 0,
+                MouseOverBackColor = Color.FromArgb(184, 57, 57),
+                MouseDownBackColor = Color.FromArgb(138, 43, 43)
+            },
+            BackColor = Color.FromArgb(24, 28, 36),
+            ForeColor = Color.FromArgb(227, 231, 237),
+            Font = new Font("Segoe UI", 18F),
+            Location = new Point(394, 0),
+            Size = new Size(36, 36),
+            Cursor = Cursors.Hand,
+            TabStop = false
         };
         var title = new Label
         {
@@ -47,8 +84,8 @@ internal sealed class MainForm : Form
             Font = new Font("Segoe UI Semibold", 22F),
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(87, 20),
-            Size = new Size(315, 43)
+            Location = new Point(20, 44),
+            Size = new Size(390, 43)
         };
         var subtitle = new Label
         {
@@ -56,13 +93,13 @@ internal sealed class MainForm : Form
             ForeColor = Color.FromArgb(165, 174, 188),
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(87, 61),
-            Size = new Size(315, 24)
+            Location = new Point(20, 83),
+            Size = new Size(390, 24)
         };
 
-        closeButton = MakeButton("Close For Honor", new Point(28, 100), Color.FromArgb(165, 58, 58));
-        restartButton = MakeButton("Close and reopen For Honor", new Point(28, 153), Color.FromArgb(50, 101, 161));
-        cleanRestartButton = MakeButton("Clean restart (game + Ubisoft)", new Point(28, 206), Color.FromArgb(116, 82, 168));
+        closeButton = MakeButton("Close For Honor", new Point(28, 110), Color.FromArgb(165, 58, 58));
+        restartButton = MakeButton("Close and reopen For Honor", new Point(28, 163), Color.FromArgb(50, 101, 161));
+        cleanRestartButton = MakeButton("Clean restart (game + Ubisoft)", new Point(28, 216), Color.FromArgb(116, 82, 168));
         locateButton = new Button
         {
             Text = "Game location",
@@ -70,7 +107,7 @@ internal sealed class MainForm : Form
             FlatAppearance = { BorderColor = Color.FromArgb(77, 86, 104), BorderSize = 1 },
             ForeColor = Color.FromArgb(190, 199, 214),
             BackColor = Color.FromArgb(31, 36, 47),
-            Location = new Point(28, 273),
+            Location = new Point(28, 283),
             Size = new Size(136, 32),
             Cursor = Cursors.Hand,
             TabStop = false
@@ -81,7 +118,7 @@ internal sealed class MainForm : Form
             ForeColor = Color.FromArgb(165, 174, 188),
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleRight,
-            Location = new Point(170, 278),
+            Location = new Point(170, 288),
             Size = new Size(232, 21)
         };
 
@@ -89,7 +126,11 @@ internal sealed class MainForm : Form
         restartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.Restart);
         cleanRestartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.CleanRestart);
         locateButton.Click += (sender, args) => ChooseGameLocation();
-        Controls.AddRange(new Control[] { logo, title, subtitle, closeButton, restartButton, cleanRestartButton, locateButton, statusLabel });
+        closeAppButton.Click += (sender, args) => BeginFadeOut();
+        titleBar.MouseDown += BeginWindowDrag;
+        appName.MouseDown += BeginWindowDrag;
+        titleBar.Controls.AddRange(new Control[] { appName, closeAppButton });
+        Controls.AddRange(new Control[] { titleBar, title, subtitle, closeButton, restartButton, cleanRestartButton, locateButton, statusLabel });
 
         gameStateTimer = new Timer { Interval = 750 };
         gameStateTimer.Tick += (sender, args) => RefreshGameState();
@@ -223,17 +264,6 @@ internal sealed class MainForm : Form
         locateButton.Enabled = enabled;
     }
 
-    private static Image LoadLogo()
-    {
-        var stream = typeof(MainForm).Assembly.GetManifestResourceStream("ForHonorQuickActions.Logo.png");
-        if (stream == null) return null;
-        using (stream)
-        using (var image = Image.FromStream(stream))
-        {
-            return new Bitmap(image);
-        }
-    }
-
     private void RefreshGameState()
     {
         if (isRunning) return;
@@ -244,26 +274,60 @@ internal sealed class MainForm : Form
         {
             closeButton.Text = "Close For Honor";
             closeButton.BackColor = Color.FromArgb(165, 58, 58);
-            closeButton.Location = new Point(28, 100);
+            closeButton.Location = new Point(28, 110);
             closeButton.Visible = true;
             restartButton.Visible = true;
             cleanRestartButton.Text = "Clean restart (game + Ubisoft)";
-            cleanRestartButton.Location = new Point(28, 206);
+            cleanRestartButton.Location = new Point(28, 216);
             statusLabel.Text = "For Honor is running.";
         }
         else
         {
             closeButton.Text = "Open For Honor";
             closeButton.BackColor = Color.FromArgb(51, 125, 86);
-            closeButton.Location = new Point(28, 126);
+            closeButton.Location = new Point(28, 136);
             closeButton.Visible = true;
             restartButton.Visible = false;
             cleanRestartButton.Text = "Clean restart (Ubisoft + open game)";
-            cleanRestartButton.Location = new Point(28, 179);
+            cleanRestartButton.Location = new Point(28, 189);
             statusLabel.Text = waitingForGameStart
                 ? "For Honor launch sent. Waiting for the game…"
                 : "For Honor is not running.";
         }
+    }
+
+    private void BeginWindowDrag(object sender, MouseEventArgs args)
+    {
+        if (args.Button != MouseButtons.Left) return;
+        ReleaseCapture();
+        SendMessage(Handle, WmNclButtonDown, (IntPtr)HtCaption, IntPtr.Zero);
+    }
+
+    private async void BeginFadeOut()
+    {
+        if (isFadingOut) return;
+        isFadingOut = true;
+        closeAppButton.Enabled = false;
+        gameStateTimer.Stop();
+
+        for (var opacity = 1.0; opacity > 0.05; opacity -= 0.10)
+        {
+            Opacity = opacity;
+            await Task.Delay(16);
+        }
+        Opacity = 0;
+        Close();
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs args)
+    {
+        if (!isFadingOut && args.CloseReason == CloseReason.UserClosing)
+        {
+            args.Cancel = true;
+            BeginFadeOut();
+            return;
+        }
+        base.OnFormClosing(args);
     }
 
     private enum ActionKind { Close, Open, Restart, CleanRestart }
