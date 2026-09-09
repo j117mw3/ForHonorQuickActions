@@ -14,6 +14,7 @@ internal sealed class MainForm : Form
     private readonly Label statusLabel;
     private readonly Button closeButton;
     private readonly Button restartButton;
+    private readonly Button ubisoftRestartButton;
     private readonly Button cleanRestartButton;
     private readonly Button locateButton;
     private readonly Button closeAppButton;
@@ -99,6 +100,7 @@ internal sealed class MainForm : Form
 
         closeButton = MakeButton("Close For Honor", new Point(28, 110), Color.FromArgb(165, 58, 58));
         restartButton = MakeButton("Close and reopen For Honor", new Point(28, 163), Color.FromArgb(50, 101, 161));
+        ubisoftRestartButton = MakeButton("Clean restart Ubisoft", new Point(28, 163), Color.FromArgb(50, 101, 161));
         cleanRestartButton = MakeButton("Clean restart (game + Ubisoft)", new Point(28, 216), Color.FromArgb(116, 82, 168));
         locateButton = new Button
         {
@@ -124,13 +126,14 @@ internal sealed class MainForm : Form
 
         closeButton.Click += async (sender, args) => await RunActionAsync(gameIsRunning ? ActionKind.Close : ActionKind.Open);
         restartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.Restart);
+        ubisoftRestartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.UbisoftRestart);
         cleanRestartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.CleanRestart);
         locateButton.Click += (sender, args) => ChooseGameLocation();
         closeAppButton.Click += (sender, args) => BeginFadeOut();
         titleBar.MouseDown += BeginWindowDrag;
         appName.MouseDown += BeginWindowDrag;
         titleBar.Controls.AddRange(new Control[] { appName, closeAppButton });
-        Controls.AddRange(new Control[] { titleBar, title, subtitle, closeButton, restartButton, cleanRestartButton, locateButton, statusLabel });
+        Controls.AddRange(new Control[] { titleBar, title, subtitle, closeButton, restartButton, ubisoftRestartButton, cleanRestartButton, locateButton, statusLabel });
 
         gameStateTimer = new Timer { Interval = 750 };
         gameStateTimer.Tick += (sender, args) => RefreshGameState();
@@ -187,6 +190,13 @@ internal sealed class MainForm : Form
                     await LaunchGameAsync();
                     break;
 
+                case ActionKind.UbisoftRestart:
+                    SetStatus("Closing game, anti-cheat, and Ubisoft…");
+                    ProcessActions.Stop(ProcessActions.CleanRestartProcesses);
+                    await Task.Delay(650);
+                    await LaunchUbisoftAsync();
+                    break;
+
                 case ActionKind.CleanRestart:
                     SetStatus("Closing game, anti-cheat, and Ubisoft…");
                     ProcessActions.Stop(ProcessActions.CleanRestartProcesses);
@@ -228,6 +238,27 @@ internal sealed class MainForm : Form
         RefreshGameState();
     }
 
+    private async Task LaunchUbisoftAsync()
+    {
+        SetStatus("Finding and starting Ubisoft Connect…");
+        Task<string> findTask = Task.Factory.StartNew<string>(delegate { return GameLocator.FindUbisoftConnect(); });
+        var launcherPath = await findTask;
+        if (launcherPath == null)
+        {
+            SetStatus("Ubisoft Connect could not be found.");
+            MessageBox.Show(this,
+                "Ubisoft Connect could not be found automatically. Install or open Ubisoft Connect, then try again.",
+                "Ubisoft Connect not found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetButtonsEnabled(true);
+            isRunning = false;
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo(launcherPath) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(launcherPath) });
+        SetStatus("Ubisoft Connect is starting.");
+        FinishAction();
+    }
+
     private void FinishAction()
     {
         isRunning = false;
@@ -260,6 +291,7 @@ internal sealed class MainForm : Form
     {
         closeButton.Enabled = enabled;
         restartButton.Enabled = enabled;
+        ubisoftRestartButton.Enabled = enabled;
         cleanRestartButton.Enabled = enabled;
         locateButton.Enabled = enabled;
     }
@@ -277,6 +309,7 @@ internal sealed class MainForm : Form
             closeButton.Location = new Point(28, 110);
             closeButton.Visible = true;
             restartButton.Visible = true;
+            ubisoftRestartButton.Visible = false;
             cleanRestartButton.Text = "Clean restart (game + Ubisoft)";
             cleanRestartButton.Location = new Point(28, 216);
             statusLabel.Text = "For Honor is running.";
@@ -285,11 +318,13 @@ internal sealed class MainForm : Form
         {
             closeButton.Text = "Open For Honor";
             closeButton.BackColor = Color.FromArgb(51, 125, 86);
-            closeButton.Location = new Point(28, 136);
+            closeButton.Location = new Point(28, 110);
             closeButton.Visible = true;
             restartButton.Visible = false;
+            ubisoftRestartButton.Visible = true;
+            ubisoftRestartButton.Location = new Point(28, 163);
             cleanRestartButton.Text = "Clean restart (Ubisoft + open game)";
-            cleanRestartButton.Location = new Point(28, 189);
+            cleanRestartButton.Location = new Point(28, 216);
             statusLabel.Text = waitingForGameStart
                 ? "For Honor launch sent. Waiting for the game…"
                 : "For Honor is not running.";
@@ -330,6 +365,6 @@ internal sealed class MainForm : Form
         base.OnFormClosing(args);
     }
 
-    private enum ActionKind { Close, Open, Restart, CleanRestart }
+    private enum ActionKind { Close, Open, Restart, UbisoftRestart, CleanRestart }
 }
 }

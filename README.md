@@ -5,7 +5,7 @@ A fast, mouse-only Windows utility for players who need to close or restart For 
 ## Actions
 
 - When **For Honor is running**: **Close For Honor**, **Close and reopen For Honor**, and **Clean restart** are shown.
-- When **For Honor is not running**: **Open For Honor** and **Clean restart** are shown. **Open For Honor** starts the game and the utility switches to the three running-game controls as soon as `forhonor.exe` appears.
+- When **For Honor is not running**: **Open For Honor**, **Clean restart Ubisoft**, and **Clean restart (Ubisoft + open game)** are shown. The Ubisoft-only option stops For Honor, anti-cheat, and Ubisoft processes, then starts Ubisoft Connect without launching the game.
 
 The utility stays open for every action and only closes when the player closes its window. It uses a borderless, draggable custom title strip with a fade-out close animation. `Logo.png` is compiled into the EXE and taskbar icon.
 
