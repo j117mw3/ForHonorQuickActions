@@ -1,0 +1,10 @@
+# Build output and generated Windows icon
+ForHonorQuickActions/bin/
+ForHonorQuickActions/obj/
+ForHonorQuickActions/Logo.ico
+release/
+
+# Local editor and user settings
+.vs/
+*.user
+*.suo
