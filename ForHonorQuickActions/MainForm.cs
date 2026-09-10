@@ -18,7 +18,10 @@ internal sealed class MainForm : Form
     private readonly Button cleanRestartButton;
     private readonly Button locateButton;
     private readonly Button closeAppButton;
+    private readonly Button overlayButton;
     private readonly Timer gameStateTimer;
+    private GameOverlay gameOverlay;
+    private Screen forHonorScreen;
     private bool isRunning;
     private bool gameIsRunning;
     private bool waitingForGameStart;
@@ -78,6 +81,26 @@ internal sealed class MainForm : Form
             Cursor = Cursors.Hand,
             TabStop = false
         };
+        overlayButton = new Button
+        {
+            Text = "↗",
+            FlatStyle = FlatStyle.Flat,
+            FlatAppearance =
+            {
+                BorderSize = 0,
+                MouseOverBackColor = Color.FromArgb(42, 90, 112),
+                MouseDownBackColor = Color.FromArgb(31, 68, 85)
+            },
+            BackColor = Color.FromArgb(24, 28, 36),
+            ForeColor = Color.FromArgb(227, 231, 237),
+            Font = new Font("Segoe UI Symbol", 13F),
+            Location = new Point(358, 0),
+            Size = new Size(36, 36),
+            Cursor = Cursors.Hand,
+            TabStop = false,
+            Visible = false,
+            AccessibleName = "Show quick controls on For Honor's screen"
+        };
         var title = new Label
         {
             Text = "FOR HONOR",
@@ -130,9 +153,10 @@ internal sealed class MainForm : Form
         cleanRestartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.CleanRestart);
         locateButton.Click += (sender, args) => ChooseGameLocation();
         closeAppButton.Click += (sender, args) => BeginFadeOut();
+        overlayButton.Click += (sender, args) => ToggleGameOverlay();
         titleBar.MouseDown += BeginWindowDrag;
         appName.MouseDown += BeginWindowDrag;
-        titleBar.Controls.AddRange(new Control[] { appName, closeAppButton });
+        titleBar.Controls.AddRange(new Control[] { appName, overlayButton, closeAppButton });
         Controls.AddRange(new Control[] { titleBar, title, subtitle, closeButton, restartButton, ubisoftRestartButton, cleanRestartButton, locateButton, statusLabel });
 
         gameStateTimer = new Timer { Interval = 750 };
@@ -294,6 +318,7 @@ internal sealed class MainForm : Form
         ubisoftRestartButton.Enabled = enabled;
         cleanRestartButton.Enabled = enabled;
         locateButton.Enabled = enabled;
+        overlayButton.Enabled = enabled && gameIsRunning && forHonorScreen != null;
     }
 
     private void RefreshGameState()
@@ -304,6 +329,7 @@ internal sealed class MainForm : Form
         if (gameIsRunning) waitingForGameStart = false;
         if (gameIsRunning)
         {
+            forHonorScreen = ProcessActions.FindForHonorScreen();
             closeButton.Text = "Close For Honor";
             closeButton.BackColor = Color.FromArgb(165, 58, 58);
             closeButton.Location = new Point(28, 110);
@@ -313,9 +339,18 @@ internal sealed class MainForm : Form
             cleanRestartButton.Text = "Clean restart (game + Ubisoft)";
             cleanRestartButton.Location = new Point(28, 216);
             statusLabel.Text = "For Honor is running.";
+            overlayButton.Visible = true;
+            overlayButton.Enabled = forHonorScreen != null;
+
+            if (gameOverlay != null && gameOverlay.Visible)
+            {
+                if (forHonorScreen == null) gameOverlay.Hide();
+                else gameOverlay.ShowOnScreen(forHonorScreen);
+            }
         }
         else
         {
+            forHonorScreen = null;
             closeButton.Text = "Open For Honor";
             closeButton.BackColor = Color.FromArgb(51, 125, 86);
             closeButton.Location = new Point(28, 110);
@@ -328,7 +363,47 @@ internal sealed class MainForm : Form
             statusLabel.Text = waitingForGameStart
                 ? "For Honor launch sent. Waiting for the game…"
                 : "For Honor is not running.";
+            overlayButton.Visible = false;
+            if (gameOverlay != null && gameOverlay.Visible) RestoreMainApplication();
         }
+    }
+
+    private void ToggleGameOverlay()
+    {
+        forHonorScreen = ProcessActions.FindForHonorScreen();
+        if (forHonorScreen == null)
+        {
+            SetStatus("Waiting for For Honor's game window…");
+            return;
+        }
+
+        if (gameOverlay != null && gameOverlay.Visible)
+        {
+            RestoreMainApplication();
+            return;
+        }
+
+        if (gameOverlay == null)
+            gameOverlay = new GameOverlay(RunOverlayAction, RestoreMainApplication);
+
+        gameOverlay.ShowOnScreen(forHonorScreen);
+        WindowState = FormWindowState.Minimized;
+    }
+
+    private async void RunOverlayAction(ActionKind action)
+    {
+        if (!gameIsRunning || isRunning) return;
+        RestoreMainApplication();
+        await RunActionAsync(action);
+    }
+
+    private void RestoreMainApplication()
+    {
+        if (gameOverlay != null) gameOverlay.Hide();
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Show();
+        Activate();
+        BringToFront();
     }
 
     private void BeginWindowDrag(object sender, MouseEventArgs args)
@@ -344,6 +419,7 @@ internal sealed class MainForm : Form
         isFadingOut = true;
         closeAppButton.Enabled = false;
         gameStateTimer.Stop();
+        if (gameOverlay != null) gameOverlay.Hide();
 
         for (var opacity = 1.0; opacity > 0.05; opacity -= 0.10)
         {
@@ -362,9 +438,10 @@ internal sealed class MainForm : Form
             BeginFadeOut();
             return;
         }
+        if (gameOverlay != null) gameOverlay.Dispose();
         base.OnFormClosing(args);
     }
 
-    private enum ActionKind { Close, Open, Restart, UbisoftRestart, CleanRestart }
+    internal enum ActionKind { Close, Open, Restart, UbisoftRestart, CleanRestart }
 }
 }
