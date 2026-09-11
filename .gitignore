@@ -1,7 +1,6 @@
-# Build output and generated Windows icon
+# Build output
 ForHonorQuickActions/bin/
 ForHonorQuickActions/obj/
-ForHonorQuickActions/Logo.ico
 release/
 
 # Local editor and user settings

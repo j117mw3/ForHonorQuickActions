@@ -18,6 +18,7 @@ internal sealed class MainForm : Form
     private readonly Button cleanRestartButton;
     private readonly Button locateButton;
     private readonly Button closeAppButton;
+    private readonly Button settingsButton;
     private readonly Button overlayButton;
     private readonly Timer gameStateTimer;
     private GameOverlay gameOverlay;
@@ -25,6 +26,10 @@ internal sealed class MainForm : Form
     private bool isRunning;
     private bool gameIsRunning;
     private bool waitingForGameStart;
+    // A launch can briefly create forhonor.exe while Ubisoft/EAC is showing a
+    // splash screen. Do not pop out until the process exposes its game window,
+    // and only do it once for each game session.
+    private bool overlayShownForCurrentGame;
     private bool isFadingOut;
 
     private const int WmNclButtonDown = 0xA1;
@@ -80,6 +85,25 @@ internal sealed class MainForm : Form
             Size = new Size(36, 36),
             Cursor = Cursors.Hand,
             TabStop = false
+        };
+        settingsButton = new Button
+        {
+            Text = "⚙",
+            FlatStyle = FlatStyle.Flat,
+            FlatAppearance =
+            {
+                BorderSize = 0,
+                MouseOverBackColor = Color.FromArgb(58, 64, 76),
+                MouseDownBackColor = Color.FromArgb(43, 48, 58)
+            },
+            BackColor = Color.FromArgb(24, 28, 36),
+            ForeColor = Color.FromArgb(227, 231, 237),
+            Font = new Font("Segoe UI Symbol", 12F),
+            Location = new Point(322, 0),
+            Size = new Size(36, 36),
+            Cursor = Cursors.Hand,
+            TabStop = false,
+            AccessibleName = "Choose the default game launcher"
         };
         overlayButton = new Button
         {
@@ -151,12 +175,13 @@ internal sealed class MainForm : Form
         restartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.Restart);
         ubisoftRestartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.UbisoftRestart);
         cleanRestartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.CleanRestart);
+        settingsButton.Click += (sender, args) => OpenLaunchSettings();
         locateButton.Click += (sender, args) => ChooseGameLocation();
         closeAppButton.Click += (sender, args) => BeginFadeOut();
         overlayButton.Click += (sender, args) => ToggleGameOverlay();
         titleBar.MouseDown += BeginWindowDrag;
         appName.MouseDown += BeginWindowDrag;
-        titleBar.Controls.AddRange(new Control[] { appName, overlayButton, closeAppButton });
+        titleBar.Controls.AddRange(new Control[] { appName, settingsButton, overlayButton, closeAppButton });
         Controls.AddRange(new Control[] { titleBar, title, subtitle, closeButton, restartButton, ubisoftRestartButton, cleanRestartButton, locateButton, statusLabel });
 
         gameStateTimer = new Timer { Interval = 750 };
@@ -240,23 +265,25 @@ internal sealed class MainForm : Form
 
     private async Task LaunchGameAsync()
     {
+        var selectedPlatform = LaunchPreferences.Load();
         SetStatus("Finding and starting For Honor…");
-        Task<string> findTask = Task.Factory.StartNew<string>(delegate { return GameLocator.Find(); });
-        var gamePath = await findTask;
-        if (gamePath == null)
+        Task<GameLaunchTarget> findTask = Task.Factory.StartNew<GameLaunchTarget>(
+            delegate { return GameLocator.FindLaunchTarget(selectedPlatform); });
+        var launchTarget = await findTask;
+        if (launchTarget == null)
         {
-            SetStatus("Game not found — choose it once below.");
+            SetStatus("The selected launcher is unavailable.");
             MessageBox.Show(this,
-                "For Honor could not be found automatically. Select forhonor.exe once and this app will remember it.",
-                "Choose For Honor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                "The selected launcher or its For Honor installation could not be found. Open Launch settings and choose a detected platform, or select the current forhonor.exe.",
+                "Launcher unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
             SetButtonsEnabled(true);
             isRunning = false;
             return;
         }
 
-        Process.Start(new ProcessStartInfo(gamePath) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(gamePath) });
+        launchTarget.Start();
         waitingForGameStart = true;
-        SetStatus("For Honor launch sent. This utility will stay open.");
+        SetStatus("For Honor launch sent through " + launchTarget.DisplayName + ".");
         isRunning = false;
         SetButtonsEnabled(true);
         RefreshGameState();
@@ -290,6 +317,35 @@ internal sealed class MainForm : Form
         RefreshGameState();
     }
 
+    private void OpenLaunchSettings()
+    {
+        SetStatus("Detecting Steam and Ubisoft Connect…");
+        var available = GameLocator.DetectLaunchPlatforms();
+        var current = LaunchPreferences.Load();
+        using (var dialog = new LaunchSettingsForm(current, available))
+        {
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                RefreshGameState();
+                return;
+            }
+
+            LaunchPreferences.Save(dialog.SelectedPlatform);
+            SetStatus("Default launcher: " + PlatformDisplayName(dialog.SelectedPlatform) + ".");
+        }
+    }
+
+    private static string PlatformDisplayName(LaunchPlatform platform)
+    {
+        switch (platform)
+        {
+            case LaunchPlatform.Steam: return "Steam";
+            case LaunchPlatform.UbisoftConnect: return "Ubisoft Connect";
+            case LaunchPlatform.DirectExecutable: return "direct executable";
+            default: return "Automatic";
+        }
+    }
+
     private void ChooseGameLocation()
     {
         using (var dialog = new OpenFileDialog
@@ -318,6 +374,7 @@ internal sealed class MainForm : Form
         ubisoftRestartButton.Enabled = enabled;
         cleanRestartButton.Enabled = enabled;
         locateButton.Enabled = enabled;
+        settingsButton.Enabled = enabled;
         overlayButton.Enabled = enabled && gameIsRunning && forHonorScreen != null;
     }
 
@@ -326,7 +383,6 @@ internal sealed class MainForm : Form
         if (isRunning) return;
 
         gameIsRunning = ProcessActions.IsForHonorRunning();
-        if (gameIsRunning) waitingForGameStart = false;
         if (gameIsRunning)
         {
             forHonorScreen = ProcessActions.FindForHonorScreen();
@@ -338,19 +394,36 @@ internal sealed class MainForm : Form
             ubisoftRestartButton.Visible = false;
             cleanRestartButton.Text = "Clean restart (game + Ubisoft)";
             cleanRestartButton.Location = new Point(28, 216);
-            statusLabel.Text = "For Honor is running.";
+            var gameWindowReady = forHonorScreen != null;
+            if (gameWindowReady) waitingForGameStart = false;
+            statusLabel.Text = gameWindowReady
+                ? "For Honor is running."
+                : "For Honor is starting. Waiting for its game window…";
             overlayButton.Visible = true;
-            overlayButton.Enabled = forHonorScreen != null;
+            overlayButton.Enabled = gameWindowReady;
 
             if (gameOverlay != null && gameOverlay.Visible)
             {
                 if (forHonorScreen == null) gameOverlay.Hide();
                 else gameOverlay.ShowOnScreen(forHonorScreen);
             }
+            else if (gameWindowReady && !overlayShownForCurrentGame)
+            {
+                // The overlay follows the actual game window, rather than the
+                // short-lived launcher/splash phase.
+                ShowGameOverlay();
+            }
+            else if (gameWindowReady && overlayShownForCurrentGame && WindowState == FormWindowState.Minimized)
+            {
+                // Recover the overlay after a temporary display-mode or monitor
+                // change without reopening it after the player chose Return.
+                ShowGameOverlay();
+            }
         }
         else
         {
             forHonorScreen = null;
+            overlayShownForCurrentGame = false;
             closeButton.Text = "Open For Honor";
             closeButton.BackColor = Color.FromArgb(51, 125, 86);
             closeButton.Location = new Point(28, 110);
@@ -383,10 +456,18 @@ internal sealed class MainForm : Form
             return;
         }
 
+        ShowGameOverlay();
+    }
+
+    private void ShowGameOverlay()
+    {
+        if (forHonorScreen == null) return;
+
         if (gameOverlay == null)
             gameOverlay = new GameOverlay(RunOverlayAction, RestoreMainApplication);
 
         gameOverlay.ShowOnScreen(forHonorScreen);
+        overlayShownForCurrentGame = true;
         WindowState = FormWindowState.Minimized;
     }
 

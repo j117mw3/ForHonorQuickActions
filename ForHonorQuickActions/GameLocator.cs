@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -7,6 +8,61 @@ using Microsoft.Win32;
 
 namespace ForHonorQuickActions
 {
+
+internal sealed class LaunchPlatformAvailability
+{
+    public string SteamClientPath;
+    public string SteamGamePath;
+    public string UbisoftClientPath;
+    public string UbisoftGamePath;
+    public string UbisoftProductId;
+    public string DirectGamePath;
+
+    public bool SteamAvailable { get { return SteamClientPath != null && SteamGamePath != null; } }
+    public bool UbisoftAvailable
+    {
+        get { return UbisoftClientPath != null && UbisoftGamePath != null && UbisoftProductId != null; }
+    }
+}
+
+internal sealed class GameLaunchTarget
+{
+    private readonly string fileName;
+    private readonly string arguments;
+    private readonly string workingDirectory;
+
+    public readonly LaunchPlatform Platform;
+    public readonly string DisplayName;
+
+    public GameLaunchTarget(LaunchPlatform platform, string displayName, string fileName, string arguments, string workingDirectory)
+    {
+        Platform = platform;
+        DisplayName = displayName;
+        this.fileName = fileName;
+        this.arguments = arguments;
+        this.workingDirectory = workingDirectory;
+    }
+
+    public void Start()
+    {
+        var startInfo = new ProcessStartInfo(fileName) { UseShellExecute = true };
+        if (!string.IsNullOrWhiteSpace(arguments)) startInfo.Arguments = arguments;
+        if (!string.IsNullOrWhiteSpace(workingDirectory)) startInfo.WorkingDirectory = workingDirectory;
+        Process.Start(startInfo);
+    }
+}
+
+internal sealed class UbisoftGameRegistration
+{
+    public readonly string ProductId;
+    public readonly string GamePath;
+
+    public UbisoftGameRegistration(string productId, string gamePath)
+    {
+        ProductId = productId;
+        GamePath = gamePath;
+    }
+}
 
 internal static class GameLocator
 {
@@ -32,6 +88,50 @@ internal static class GameLocator
 
         foreach (var candidate in FixedDriveCandidates())
             if (IsGameExecutable(candidate)) return candidate;
+
+        return null;
+    }
+
+    public static LaunchPlatformAvailability DetectLaunchPlatforms()
+    {
+        var steamClient = FindSteamClient();
+        var steamGame = FindSteamGame();
+        var ubisoftClient = FindUbisoftConnect();
+        var ubisoftGame = FindUbisoftGameRegistration();
+        var directGame = Find();
+
+        return new LaunchPlatformAvailability
+        {
+            SteamClientPath = steamClient,
+            SteamGamePath = steamGame,
+            UbisoftClientPath = ubisoftClient,
+            UbisoftGamePath = ubisoftGame == null ? null : ubisoftGame.GamePath,
+            UbisoftProductId = ubisoftGame == null ? null : ubisoftGame.ProductId,
+            DirectGamePath = directGame
+        };
+    }
+
+    public static GameLaunchTarget FindLaunchTarget(LaunchPlatform platform)
+    {
+        var available = DetectLaunchPlatforms();
+        if (platform == LaunchPlatform.Automatic)
+        {
+            if (available.SteamAvailable) platform = LaunchPlatform.Steam;
+            else if (available.UbisoftAvailable) platform = LaunchPlatform.UbisoftConnect;
+            else platform = LaunchPlatform.DirectExecutable;
+        }
+
+        if (platform == LaunchPlatform.Steam && available.SteamAvailable)
+            return new GameLaunchTarget(LaunchPlatform.Steam, "Steam", available.SteamClientPath,
+                "-applaunch " + SteamAppId, Path.GetDirectoryName(available.SteamClientPath));
+
+        if (platform == LaunchPlatform.UbisoftConnect && available.UbisoftAvailable)
+            return new GameLaunchTarget(LaunchPlatform.UbisoftConnect, "Ubisoft Connect",
+                "uplay://launch/" + available.UbisoftProductId + "/0", null, null);
+
+        if (platform == LaunchPlatform.DirectExecutable && IsGameExecutable(available.DirectGamePath))
+            return new GameLaunchTarget(LaunchPlatform.DirectExecutable, "the saved executable",
+                available.DirectGamePath, null, Path.GetDirectoryName(available.DirectGamePath));
 
         return null;
     }
@@ -96,6 +196,28 @@ internal static class GameLocator
             foreach (Match match in Regex.Matches(content, "^\\s*\\\"\\d+\\\"\\s+\\\"(?<path>[^\\\"]+)\\\"", RegexOptions.Multiline))
                 yield return match.Groups["path"].Value.Replace("\\\\", "\\");
         }
+    }
+
+    private static string FindSteamClient()
+    {
+        foreach (var root in SteamRoots())
+        {
+            var candidate = Path.Combine(root, "steam.exe");
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        return null;
+    }
+
+    private static string FindSteamGame()
+    {
+        foreach (var root in SteamRoots())
+        {
+            var gamePath = FindInSteamLibrary(root);
+            if (gamePath != null) return gamePath;
+        }
+
+        return null;
     }
 
     private static string FindInSteamLibrary(string libraryRoot)
@@ -183,7 +305,22 @@ internal static class GameLocator
         }
     }
 
+    private static UbisoftGameRegistration FindUbisoftGameRegistration()
+    {
+        foreach (var registration in UbisoftInstallRegistrations())
+            if (IsGameExecutable(registration.GamePath) && Regex.IsMatch(registration.ProductId, @"^\d+$"))
+                return registration;
+
+        return null;
+    }
+
     private static IEnumerable<string> UbisoftRegistryCandidates()
+    {
+        foreach (var registration in UbisoftInstallRegistrations())
+            yield return registration.GamePath;
+    }
+
+    private static IEnumerable<UbisoftGameRegistration> UbisoftInstallRegistrations()
     {
         var keyPaths = new[]
         {
@@ -194,23 +331,49 @@ internal static class GameLocator
         {
             foreach (var keyPath in keyPaths)
             {
-                RegistryKey key = null;
-                try { key = hive.OpenSubKey(keyPath); }
+                RegistryKey installsKey = null;
+                try { installsKey = hive.OpenSubKey(keyPath); }
                 catch (System.Security.SecurityException) { }
-                if (key == null) continue;
-                using (key)
+                if (installsKey == null) continue;
+                using (installsKey)
                 {
-                    foreach (var valueName in key.GetValueNames())
+                    // Some older launcher versions stored product IDs as values.
+                    foreach (var valueName in installsKey.GetValueNames())
                     {
-                        var installPath = key.GetValue(valueName) as string;
-                        if (string.IsNullOrWhiteSpace(installPath)) continue;
-                        yield return installPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-                            ? installPath
-                            : Path.Combine(installPath, GameExe);
+                        var installPath = installsKey.GetValue(valueName) as string;
+                        var registration = CreateUbisoftRegistration(valueName, installPath);
+                        if (registration != null) yield return registration;
+                    }
+
+                    // Current Ubisoft Connect versions normally use one subkey per product ID.
+                    foreach (var productId in installsKey.GetSubKeyNames())
+                    {
+                        RegistryKey gameKey = null;
+                        try { gameKey = installsKey.OpenSubKey(productId); }
+                        catch (System.Security.SecurityException) { }
+                        if (gameKey == null) continue;
+                        using (gameKey)
+                        {
+                            var installPath = gameKey.GetValue("InstallDir") as string ??
+                                              gameKey.GetValue("InstallPath") as string ??
+                                              gameKey.GetValue("Path") as string;
+                            var registration = CreateUbisoftRegistration(productId, installPath);
+                            if (registration != null) yield return registration;
+                        }
                     }
                 }
             }
         }
+    }
+
+    private static UbisoftGameRegistration CreateUbisoftRegistration(string productId, string installPath)
+    {
+        if (string.IsNullOrWhiteSpace(productId) || string.IsNullOrWhiteSpace(installPath)) return null;
+        var expandedPath = Environment.ExpandEnvironmentVariables(installPath.Trim().Trim('"'));
+        var gamePath = expandedPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            ? expandedPath
+            : Path.Combine(expandedPath, GameExe);
+        return new UbisoftGameRegistration(productId, gamePath);
     }
 
     private static IEnumerable<string> FixedDriveCandidates()

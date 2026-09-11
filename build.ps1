@@ -15,13 +15,11 @@ if (-not (Test-Path -LiteralPath $compiler)) {
 $releaseDirectory = Join-Path $PSScriptRoot 'release'
 New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
 
-$logo = Join-Path $PSScriptRoot 'Logo.png'
 $icon = Join-Path $PSScriptRoot 'ForHonorQuickActions\Logo.ico'
-& (Join-Path $PSScriptRoot 'create-icon.ps1') -SourcePath $logo -DestinationPath $icon
 
 $manifest = Join-Path $PSScriptRoot 'ForHonorQuickActions\app.manifest'
 $output = Join-Path $releaseDirectory $OutputName
-& $compiler /nologo /target:winexe /optimize+ "/win32manifest:$manifest" "/win32icon:$icon" "/out:$output" (Join-Path $PSScriptRoot 'ForHonorQuickActions\Program.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\MainForm.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\GameOverlay.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\ProcessActions.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\GameLocator.cs')
+& $compiler /nologo /target:winexe /optimize+ "/win32manifest:$manifest" "/win32icon:$icon" "/out:$output" (Join-Path $PSScriptRoot 'ForHonorQuickActions\Program.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\MainForm.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\GameOverlay.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\ProcessActions.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\GameLocator.cs') (Join-Path $PSScriptRoot 'ForHonorQuickActions\LaunchSettings.cs')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Built $output"
