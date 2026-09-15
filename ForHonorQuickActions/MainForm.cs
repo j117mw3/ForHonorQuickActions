@@ -221,9 +221,8 @@ internal sealed class MainForm : Form
             {
                 case ActionKind.Close:
                     SetStatus("Closing For Honor…");
-                    ProcessActions.Stop(ProcessActions.GameProcesses);
+                    await StopProcessesAsync(ProcessActions.GameProcesses);
                     SetStatus("For Honor closed.");
-                    await Task.Delay(250);
                     FinishAction();
                     break;
 
@@ -234,22 +233,19 @@ internal sealed class MainForm : Form
 
                 case ActionKind.Restart:
                     SetStatus("Closing For Honor…");
-                    ProcessActions.Stop(ProcessActions.GameProcesses);
-                    await Task.Delay(450);
+                    await StopProcessesAsync(ProcessActions.GameProcesses);
                     await LaunchGameAsync();
                     break;
 
                 case ActionKind.UbisoftRestart:
                     SetStatus("Closing game, anti-cheat, and Ubisoft…");
-                    ProcessActions.Stop(ProcessActions.CleanRestartProcesses);
-                    await Task.Delay(650);
+                    await StopProcessesAsync(ProcessActions.CleanRestartProcesses);
                     await LaunchUbisoftAsync();
                     break;
 
                 case ActionKind.CleanRestart:
                     SetStatus("Closing game, anti-cheat, and Ubisoft…");
-                    ProcessActions.Stop(ProcessActions.CleanRestartProcesses);
-                    await Task.Delay(650);
+                    await StopProcessesAsync(ProcessActions.CleanRestartProcesses);
                     await LaunchGameAsync();
                     break;
             }
@@ -260,6 +256,17 @@ internal sealed class MainForm : Form
             MessageBox.Show(this, ex.Message, "For Honor Quick Actions", MessageBoxButtons.OK, MessageBoxIcon.Error);
             SetButtonsEnabled(true);
             isRunning = false;
+        }
+    }
+
+    private static async Task StopProcessesAsync(string[] processNames)
+    {
+        var stopped = await Task.Run(delegate { return ProcessActions.Stop(processNames); });
+        if (!stopped)
+        {
+            throw new InvalidOperationException(
+                "One or more For Honor, anti-cheat, or Ubisoft processes could not be closed. " +
+                "Close them with Task Manager or run For Honor Quick Actions as administrator, then try again.");
         }
     }
 
