@@ -1,212 +1,349 @@
 using System;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.Drawing;
-using System.Runtime.InteropServices;
 
 namespace ForHonorQuickActions
 {
-
 internal sealed class MainForm : Form
 {
-    private readonly Label statusLabel;
-    private readonly Button closeButton;
-    private readonly Button restartButton;
-    private readonly Button ubisoftRestartButton;
-    private readonly Button cleanRestartButton;
-    private readonly Button locateButton;
-    private readonly Button closeAppButton;
-    private readonly Button settingsButton;
-    private readonly Button overlayButton;
-    private readonly Timer gameStateTimer;
+    private readonly AppPreferences preferences;
+    private readonly ToolTip toolTips = new ToolTip();
+    private Panel titleBar, mainPanel, settingsPanel, defaultLaunchPanel, appearancePanel;
+    private Label stateDot, stateLabel, opacityValueLabel, executablePathLabel;
+    private AnimatedButton closeButton, restartButton, ubisoftToggleButton, ubisoftRestartButton;
+    private AnimatedButton cleanRestartButton, settingsButton, overlayButton;
+    private AnimatedButton minimizeButton, closeAppButton, defaultLaunchTab, appearanceTab;
+    private RadioButton automaticRadio, steamRadio, ubisoftRadio, executableRadio, trayRadio, taskbarRadio;
+    private DarkSlider opacitySlider;
+    private ComboBox accentList;
+    private CheckBox toolTipsCheck, startupCheck;
+    private NotifyIcon trayIcon;
+    private ToolStripMenuItem trayGameToggleItem, trayGameRestartItem;
+    private ToolStripMenuItem trayUbisoftToggleItem, trayUbisoftRestartItem;
+    private Timer gameStateTimer;
     private GameOverlay gameOverlay;
     private Screen forHonorScreen;
-    private bool isRunning;
-    private bool gameIsRunning;
-    private bool waitingForGameStart;
-    // A launch can briefly create forhonor.exe while Ubisoft/EAC is showing a
-    // splash screen. Do not pop out until the process exposes its game window,
-    // and only do it once for each game session.
-    private bool overlayShownForCurrentGame;
-    private bool isFadingOut;
+    private bool isRunning, gameIsRunning, waitingForGameStart, overlayShownForCurrentGame;
+    private bool isFadingOut, showingSettings, loadingSettings, stateRefreshPending;
+    private bool settingsControlsCreated;
+    private bool? displayedGameRunning, displayedUbisoftRunning;
 
     private const int WmNclButtonDown = 0xA1;
     private const int HtCaption = 0x2;
+    [DllImport("user32.dll")] private static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
-    [DllImport("user32.dll")]
-    private static extern bool ReleaseCapture();
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
-
-    public MainForm()
+    public MainForm(bool startMinimized = false)
     {
+        preferences = AppPreferences.Load();
         Text = "For Honor Quick Actions";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(430, 345);
+        MinimumSize = MaximumSize = Size;
         BackColor = Color.FromArgb(19, 22, 29);
+        ForeColor = Color.White;
         Font = new Font("Segoe UI", 10F);
         DoubleBuffered = true;
+        Opacity = preferences.WindowOpacityPercent / 100.0;
 
-        var titleBar = new Panel
+        BuildChrome();
+        BuildMainView();
+        BuildSettingsView();
+        Controls.AddRange(new Control[] { titleBar, mainPanel, settingsPanel });
+        WireEvents();
+        ConfigureToolTips();
+        ApplyAppearance();
+
+        trayIcon = new NotifyIcon
         {
-            BackColor = Color.FromArgb(24, 28, 36),
-            Location = new Point(0, 0),
-            Size = new Size(430, 36)
+            Icon = Icon,
+            Text = "For Honor Quick Actions",
+            Visible = true,
+            ContextMenuStrip = CreateTrayMenu()
         };
-        var appName = new Label
+        trayIcon.DoubleClick += delegate { RestoreMainApplication(); };
+        Resize += delegate
         {
-            Text = "FOR HONOR QUICK ACTIONS",
-            ForeColor = Color.FromArgb(151, 161, 178),
-            Font = new Font("Segoe UI Semibold", 8.5F),
-            AutoSize = false,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Location = new Point(14, 0),
-            Size = new Size(300, 36)
-        };
-        closeAppButton = new Button
-        {
-            Text = "×",
-            FlatStyle = FlatStyle.Flat,
-            FlatAppearance =
-            {
-                BorderSize = 0,
-                MouseOverBackColor = Color.FromArgb(184, 57, 57),
-                MouseDownBackColor = Color.FromArgb(138, 43, 43)
-            },
-            BackColor = Color.FromArgb(24, 28, 36),
-            ForeColor = Color.FromArgb(227, 231, 237),
-            Font = new Font("Segoe UI", 18F),
-            Location = new Point(394, 0),
-            Size = new Size(36, 36),
-            Cursor = Cursors.Hand,
-            TabStop = false
-        };
-        settingsButton = new Button
-        {
-            Text = "⚙",
-            FlatStyle = FlatStyle.Flat,
-            FlatAppearance =
-            {
-                BorderSize = 0,
-                MouseOverBackColor = Color.FromArgb(58, 64, 76),
-                MouseDownBackColor = Color.FromArgb(43, 48, 58)
-            },
-            BackColor = Color.FromArgb(24, 28, 36),
-            ForeColor = Color.FromArgb(227, 231, 237),
-            Font = new Font("Segoe UI Symbol", 12F),
-            Location = new Point(322, 0),
-            Size = new Size(36, 36),
-            Cursor = Cursors.Hand,
-            TabStop = false,
-            AccessibleName = "Choose the default game launcher"
-        };
-        overlayButton = new Button
-        {
-            Text = "↗",
-            FlatStyle = FlatStyle.Flat,
-            FlatAppearance =
-            {
-                BorderSize = 0,
-                MouseOverBackColor = Color.FromArgb(42, 90, 112),
-                MouseDownBackColor = Color.FromArgb(31, 68, 85)
-            },
-            BackColor = Color.FromArgb(24, 28, 36),
-            ForeColor = Color.FromArgb(227, 231, 237),
-            Font = new Font("Segoe UI Symbol", 13F),
-            Location = new Point(358, 0),
-            Size = new Size(36, 36),
-            Cursor = Cursors.Hand,
-            TabStop = false,
-            Visible = false,
-            AccessibleName = "Show quick controls on For Honor's screen"
-        };
-        var title = new Label
-        {
-            Text = "FOR HONOR",
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI Semibold", 22F),
-            AutoSize = false,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(20, 44),
-            Size = new Size(390, 43)
-        };
-        var subtitle = new Label
-        {
-            Text = "Quick game controls",
-            ForeColor = Color.FromArgb(165, 174, 188),
-            AutoSize = false,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(20, 83),
-            Size = new Size(390, 24)
+            if (WindowState == FormWindowState.Minimized && preferences.MinimizeToTray) Hide();
         };
 
-        closeButton = MakeButton("Close For Honor", new Point(28, 110), Color.FromArgb(165, 58, 58));
-        restartButton = MakeButton("Close and reopen For Honor", new Point(28, 163), Color.FromArgb(50, 101, 161));
-        ubisoftRestartButton = MakeButton("Clean restart Ubisoft", new Point(28, 163), Color.FromArgb(50, 101, 161));
-        cleanRestartButton = MakeButton("Clean restart (game + Ubisoft)", new Point(28, 216), Color.FromArgb(116, 82, 168));
-        locateButton = new Button
-        {
-            Text = "Game location",
-            FlatStyle = FlatStyle.Flat,
-            FlatAppearance = { BorderColor = Color.FromArgb(77, 86, 104), BorderSize = 1 },
-            ForeColor = Color.FromArgb(190, 199, 214),
-            BackColor = Color.FromArgb(31, 36, 47),
-            Location = new Point(28, 283),
-            Size = new Size(136, 32),
-            Cursor = Cursors.Hand,
-            TabStop = false
-        };
-        statusLabel = new Label
-        {
-            Text = "Finds your installation automatically.",
-            ForeColor = Color.FromArgb(165, 174, 188),
-            AutoSize = false,
-            TextAlign = ContentAlignment.MiddleRight,
-            Location = new Point(170, 288),
-            Size = new Size(232, 21)
-        };
-
-        closeButton.Click += async (sender, args) => await RunActionAsync(gameIsRunning ? ActionKind.Close : ActionKind.Open);
-        restartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.Restart);
-        ubisoftRestartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.UbisoftRestart);
-        cleanRestartButton.Click += async (sender, args) => await RunActionAsync(ActionKind.CleanRestart);
-        settingsButton.Click += (sender, args) => OpenLaunchSettings();
-        locateButton.Click += (sender, args) => ChooseGameLocation();
-        closeAppButton.Click += (sender, args) => BeginFadeOut();
-        overlayButton.Click += (sender, args) => ToggleGameOverlay();
-        titleBar.MouseDown += BeginWindowDrag;
-        appName.MouseDown += BeginWindowDrag;
-        titleBar.Controls.AddRange(new Control[] { appName, settingsButton, overlayButton, closeAppButton });
-        Controls.AddRange(new Control[] { titleBar, title, subtitle, closeButton, restartButton, ubisoftRestartButton, cleanRestartButton, locateButton, statusLabel });
-
-        gameStateTimer = new Timer { Interval = 750 };
-        gameStateTimer.Tick += (sender, args) => RefreshGameState();
-        Shown += (sender, args) =>
+        gameStateTimer = new Timer { Interval = 1500 };
+        gameStateTimer.Tick += delegate { RefreshGameState(); };
+        Shown += delegate
         {
             RefreshGameState();
             gameStateTimer.Start();
+            if (startMinimized) BeginInvoke(new Action(delegate { WindowState = FormWindowState.Minimized; }));
         };
     }
 
-    private Button MakeButton(string text, Point location, Color color)
+    private AnimatedButton MakeButton(string text, Point location, Size size, Color color, float fontSize)
     {
-        var button = new Button();
-        button.Text = text;
-        button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderSize = 0;
-        button.BackColor = color;
-        button.ForeColor = Color.White;
-        button.Font = new Font("Segoe UI Semibold", 11F);
-        button.Location = location;
-        button.Size = new Size(374, 43);
-        button.Cursor = Cursors.Hand;
-        button.TabStop = false;
+        var button = new AnimatedButton
+        {
+            Text = text,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI Semibold", fontSize),
+            Location = location,
+            Size = size,
+            TabStop = false
+        };
+        button.FlatAppearance.BorderColor = Lighten(color, 45);
+        button.SetColors(color, Lighten(color, 20));
         return button;
+    }
+
+    private AnimatedButton MakeChromeButton(string text, Point location, int width)
+    {
+        var button = MakeButton(text, location, new Size(width, 43), Color.FromArgb(14, 29, 43), 12F);
+        button.FlatAppearance.BorderSize = 0;
+        return button;
+    }
+
+    private static Label MakeLabel(string text, Point location, Size size, bool heading)
+    {
+        return new Label
+        {
+            Text = text,
+            Location = location,
+            Size = size,
+            ForeColor = heading ? Color.FromArgb(185, 199, 216) : Color.FromArgb(145, 162, 181),
+            Font = heading ? new Font("Segoe UI Semibold", 9F) : new Font("Segoe UI", 9.5F),
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true
+        };
+    }
+
+    private static RadioButton MakeRadio(string text, Point location)
+    {
+        return new RadioButton
+        {
+            Text = text, Location = location, Size = new Size(255, 30),
+            ForeColor = Color.FromArgb(222, 230, 240), BackColor = Color.Transparent,
+            Cursor = Cursors.Hand
+        };
+    }
+
+    private static CheckBox MakeCheckBox(string text, Point location)
+    {
+        return new CheckBox
+        {
+            Text = text, Location = location, Size = new Size(245, 31),
+            ForeColor = Color.FromArgb(222, 230, 240), BackColor = Color.Transparent,
+            Cursor = Cursors.Hand
+        };
+    }
+
+    private void BuildChrome()
+    {
+        titleBar = new Panel { BackColor = Color.FromArgb(24, 28, 36), Location = new Point(1, 1), Size = new Size(428, 44) };
+        stateDot = new Label
+        {
+            Text = "●", ForeColor = Color.FromArgb(117, 128, 145), Font = new Font("Segoe UI", 12F),
+            TextAlign = ContentAlignment.MiddleCenter, Location = new Point(8, 3), Size = new Size(25, 38)
+        };
+        stateLabel = new Label
+        {
+            Text = "Checking For Honor…", ForeColor = Color.FromArgb(218, 227, 239),
+            Font = new Font("Segoe UI", 9.5F), TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(34, 3), Size = new Size(245, 38)
+        };
+        settingsButton = MakeChromeButton("⚙", new Point(286, 1), 36);
+        settingsButton.Font = new Font("Segoe UI Symbol", 12F);
+        overlayButton = MakeChromeButton("↗", new Point(322, 1), 36);
+        minimizeButton = MakeChromeButton("—", new Point(358, 1), 36);
+        closeAppButton = MakeChromeButton("×", new Point(394, 1), 34);
+        closeAppButton.Font = new Font("Segoe UI", 16F);
+        titleBar.Controls.AddRange(new Control[] { stateDot, stateLabel, settingsButton, overlayButton, minimizeButton, closeAppButton });
+        titleBar.MouseDown += BeginWindowDrag;
+        stateLabel.MouseDown += BeginWindowDrag;
+    }
+
+    private void BuildMainView()
+    {
+        mainPanel = new Panel { Location = new Point(1, 45), Size = new Size(428, 299), BackColor = Color.Transparent };
+        var logo = new PictureBox
+        {
+            Image = Icon == null ? null : Icon.ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom,
+            Location = new Point(28, 10), Size = new Size(56, 56)
+        };
+        var title = new Label
+        {
+            Text = "QUICK ACTIONS", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 20F),
+            TextAlign = ContentAlignment.MiddleCenter, Location = new Point(88, 10), Size = new Size(314, 56)
+        };
+        closeButton = MakeButton("Close For Honor", new Point(28, 76), new Size(374, 43), Color.FromArgb(165, 58, 58), 11F);
+        restartButton = MakeButton("Close and reopen For Honor", new Point(28, 129), new Size(374, 43), Color.FromArgb(50, 101, 161), 11F);
+        ubisoftToggleButton = MakeButton("Start Ubisoft", new Point(28, 182), new Size(182, 43), Color.FromArgb(50, 101, 161), 9.5F);
+        ubisoftRestartButton = MakeButton("Restart Ubisoft", new Point(220, 182), new Size(182, 43), Color.FromArgb(50, 101, 161), 9.5F);
+        cleanRestartButton = MakeButton("Clean restart (game + Ubisoft)", new Point(28, 235), new Size(374, 43), Color.FromArgb(116, 82, 168), 11F);
+        mainPanel.Controls.AddRange(new Control[]
+        {
+            logo, title, closeButton, restartButton, ubisoftToggleButton,
+            ubisoftRestartButton, cleanRestartButton
+        });
+    }
+
+    private void BuildSettingsView()
+    {
+        settingsPanel = new Panel
+        {
+            Location = new Point(1, 45), Size = new Size(428, 299),
+            BackColor = Color.FromArgb(19, 22, 29), Visible = false
+        };
+    }
+
+    private void EnsureSettingsControls()
+    {
+        if (settingsControlsCreated) return;
+        settingsControlsCreated = true;
+        var title = new Label
+        {
+            Text = "SETTINGS", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 18F),
+            Location = new Point(20, 5), Size = new Size(388, 38)
+        };
+        defaultLaunchTab = MakeButton("DEFAULT LAUNCH", new Point(20, 45), new Size(194, 36), preferences.AccentColor, 8.5F);
+        appearanceTab = MakeButton("APPEARANCE", new Point(214, 45), new Size(194, 36), Color.FromArgb(31, 36, 47), 8.5F);
+        settingsPanel.Controls.AddRange(new Control[] { title, defaultLaunchTab, appearanceTab });
+        defaultLaunchTab.Click += delegate { ShowSettingsTab(false); };
+        appearanceTab.Click += delegate { ShowSettingsTab(true); };
+        defaultLaunchPanel = new Panel { Location = new Point(20, 87), Size = new Size(388, 205), BackColor = Color.Transparent };
+        appearancePanel = new Panel
+        {
+            Location = new Point(20, 87), Size = new Size(388, 205),
+            BackColor = Color.Transparent, Visible = false
+        };
+        BuildLaunchSettings();
+        BuildAppearanceSettings();
+        settingsPanel.Controls.AddRange(new Control[] { defaultLaunchPanel, appearancePanel });
+        WireSettingsEvents();
+        LoadSettingsControls();
+        ConfigureSettingsToolTips();
+        ApplyAppearance();
+    }
+
+    private void BuildLaunchSettings()
+    {
+        var help = MakeLabel("Choose what opens For Honor by default.", new Point(3, 0), new Size(380, 22), false);
+        automaticRadio = MakeRadio("Automatic (first detected)", new Point(8, 24));
+        steamRadio = MakeRadio("Steam", new Point(8, 53));
+        steamRadio.Size = new Size(170, 28);
+        ubisoftRadio = MakeRadio("Ubisoft Connect", new Point(194, 53));
+        ubisoftRadio.Size = new Size(186, 28);
+        executableRadio = MakeRadio("Saved forhonor.exe", new Point(8, 82));
+        executablePathLabel = MakeLabel("No executable selected.", new Point(31, 109), new Size(349, 31), false);
+        var browse = MakeButton("Browse for forhonor.exe", new Point(8, 151), new Size(180, 34), Color.FromArgb(31, 36, 47), 8.5F);
+        browse.Click += delegate { ChooseGameLocation(true); };
+        defaultLaunchPanel.Controls.AddRange(new Control[]
+        {
+            help, automaticRadio, steamRadio, ubisoftRadio, executableRadio, executablePathLabel, browse
+        });
+    }
+
+    private void BuildAppearanceSettings()
+    {
+        var minimizeHeading = MakeLabel("WHEN MINIMIZED", new Point(3, 0), new Size(380, 22), true);
+        trayRadio = MakeRadio("Minimize to the system tray (default)", new Point(8, 23));
+        trayRadio.Size = new Size(370, 27);
+        taskbarRadio = MakeRadio("Keep the app in the taskbar", new Point(8, 49));
+        taskbarRadio.Size = new Size(370, 27);
+        var opacityHeading = MakeLabel("WINDOW TRANSPARENCY", new Point(3, 76), new Size(260, 22), true);
+        opacityValueLabel = MakeLabel("", new Point(318, 76), new Size(65, 22), false);
+        opacityValueLabel.TextAlign = ContentAlignment.MiddleRight;
+        opacitySlider = new DarkSlider
+        {
+            Location = new Point(0, 99), Size = new Size(388, 28),
+            Minimum = 70, Maximum = 100, Value = preferences.WindowOpacityPercent
+        };
+        var accentHeading = MakeLabel("ACCENT COLOR", new Point(3, 122), new Size(160, 24), true);
+        accentList = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(190, 121),
+            Size = new Size(193, 28), BackColor = Color.FromArgb(31, 36, 47), ForeColor = Color.White
+        };
+        accentList.Items.AddRange(new object[] { "Gold", "Blue", "Purple", "Emerald" });
+        toolTipsCheck = MakeCheckBox("Enable helpful tooltips", new Point(8, 150));
+        toolTipsCheck.Size = new Size(185, 26);
+        startupCheck = MakeCheckBox("Try Hard mode", new Point(8, 176));
+        startupCheck.Size = new Size(125, 27);
+        var startupExplanation = MakeLabel("Run automatically when you sign in.", new Point(132, 176), new Size(250, 27), false);
+        startupExplanation.Font = new Font("Segoe UI", 8.5F);
+        appearancePanel.Controls.AddRange(new Control[]
+        {
+            minimizeHeading, trayRadio, taskbarRadio, opacityHeading, opacityValueLabel,
+            opacitySlider, accentHeading, accentList, toolTipsCheck,
+            startupCheck, startupExplanation
+        });
+    }
+
+    private void WireEvents()
+    {
+        closeButton.Click += async delegate { await RunActionAsync(gameIsRunning ? ActionKind.Close : ActionKind.Open); };
+        restartButton.Click += async delegate { await RunActionAsync(ActionKind.Restart); };
+        ubisoftToggleButton.Click += async delegate { await RunActionAsync(ActionKind.UbisoftToggle); };
+        ubisoftRestartButton.Click += async delegate { await RunActionAsync(ActionKind.UbisoftRestart); };
+        cleanRestartButton.Click += async delegate { await RunActionAsync(ActionKind.CleanRestart); };
+        settingsButton.Click += delegate { ToggleSettings(); };
+        minimizeButton.Click += delegate { WindowState = FormWindowState.Minimized; };
+        closeAppButton.Click += delegate { BeginFadeOut(); };
+        overlayButton.Click += delegate { ToggleGameOverlay(); };
+    }
+
+    private void WireSettingsEvents()
+    {
+        automaticRadio.CheckedChanged += delegate { SaveLaunchChoice(automaticRadio, LaunchPlatform.Automatic); };
+        steamRadio.CheckedChanged += delegate { SaveLaunchChoice(steamRadio, LaunchPlatform.Steam); };
+        ubisoftRadio.CheckedChanged += delegate { SaveLaunchChoice(ubisoftRadio, LaunchPlatform.UbisoftConnect); };
+        executableRadio.CheckedChanged += delegate { SaveLaunchChoice(executableRadio, LaunchPlatform.DirectExecutable); };
+        trayRadio.CheckedChanged += delegate { if (!loadingSettings && trayRadio.Checked) { preferences.MinimizeToTray = true; SavePreferences(); } };
+        taskbarRadio.CheckedChanged += delegate { if (!loadingSettings && taskbarRadio.Checked) { preferences.MinimizeToTray = false; SavePreferences(); } };
+        opacitySlider.ValueChanged += delegate
+        {
+            opacityValueLabel.Text = opacitySlider.Value + "%";
+            if (!loadingSettings)
+            {
+                preferences.WindowOpacityPercent = opacitySlider.Value;
+                Opacity = opacitySlider.Value / 100.0;
+            }
+        };
+        opacitySlider.MouseUp += delegate { if (!loadingSettings) SavePreferences(); };
+        accentList.SelectedIndexChanged += delegate
+        {
+            if (loadingSettings || accentList.SelectedIndex < 0) return;
+            preferences.Accent = (AccentTheme)accentList.SelectedIndex;
+            ApplyAppearance();
+            SavePreferences();
+        };
+        toolTipsCheck.CheckedChanged += delegate
+        {
+            if (loadingSettings) return;
+            preferences.ToolTipsEnabled = toolTipsCheck.Checked;
+            toolTips.Active = toolTipsCheck.Checked;
+            SavePreferences();
+        };
+        startupCheck.CheckedChanged += delegate
+        {
+            if (loadingSettings) return;
+            try
+            {
+                StartupRegistration.SetEnabled(startupCheck.Checked);
+                preferences.RunOnStartup = startupCheck.Checked;
+                SavePreferences();
+            }
+            catch (Exception ex)
+            {
+                loadingSettings = true;
+                startupCheck.Checked = !startupCheck.Checked;
+                loadingSettings = false;
+                MessageBox.Show(this, ex.Message, "Windows startup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        };
     }
 
     private async Task RunActionAsync(ActionKind action)
@@ -214,7 +351,6 @@ internal sealed class MainForm : Form
         if (isRunning) return;
         isRunning = true;
         SetButtonsEnabled(false);
-
         try
         {
             switch (action)
@@ -225,24 +361,31 @@ internal sealed class MainForm : Form
                     SetStatus("For Honor closed.");
                     FinishAction();
                     break;
-
                 case ActionKind.Open:
                     waitingForGameStart = false;
                     await LaunchGameAsync();
                     break;
-
                 case ActionKind.Restart:
                     SetStatus("Closing For Honor…");
                     await StopProcessesAsync(ProcessActions.GameProcesses);
                     await LaunchGameAsync();
                     break;
-
+                case ActionKind.UbisoftToggle:
+                    var ubisoftIsRunning = await Task.Run(delegate { return ProcessActions.IsUbisoftRunning(); });
+                    if (ubisoftIsRunning)
+                    {
+                        SetStatus("Stopping Ubisoft Connect…");
+                        await StopProcessesAsync(ProcessActions.UbisoftProcesses);
+                        SetStatus("Ubisoft Connect stopped.");
+                        FinishAction();
+                    }
+                    else await LaunchUbisoftAsync();
+                    break;
                 case ActionKind.UbisoftRestart:
-                    SetStatus("Closing game, anti-cheat, and Ubisoft…");
-                    await StopProcessesAsync(ProcessActions.CleanRestartProcesses);
+                    SetStatus("Restarting Ubisoft Connect…");
+                    await StopProcessesAsync(ProcessActions.UbisoftProcesses);
                     await LaunchUbisoftAsync();
                     break;
-
                 case ActionKind.CleanRestart:
                     SetStatus("Closing game, anti-cheat, and Ubisoft…");
                     await StopProcessesAsync(ProcessActions.CleanRestartProcesses);
@@ -263,34 +406,29 @@ internal sealed class MainForm : Form
     {
         var stopped = await Task.Run(delegate { return ProcessActions.Stop(processNames); });
         if (!stopped)
-        {
-            throw new InvalidOperationException(
-                "One or more For Honor, anti-cheat, or Ubisoft processes could not be closed. " +
-                "Close them with Task Manager or run For Honor Quick Actions as administrator, then try again.");
-        }
+            throw new InvalidOperationException("One or more requested processes could not be closed. Close them with Task Manager or run this app as administrator, then try again.");
     }
 
     private async Task LaunchGameAsync()
     {
-        var selectedPlatform = LaunchPreferences.Load();
         SetStatus("Finding and starting For Honor…");
-        Task<GameLaunchTarget> findTask = Task.Factory.StartNew<GameLaunchTarget>(
-            delegate { return GameLocator.FindLaunchTarget(selectedPlatform); });
-        var launchTarget = await findTask;
+        var launchTarget = await Task.Factory.StartNew(delegate
+        {
+            return GameLocator.FindLaunchTarget(preferences.LaunchPlatform);
+        });
         if (launchTarget == null)
         {
             SetStatus("The selected launcher is unavailable.");
             MessageBox.Show(this,
-                "The selected launcher or its For Honor installation could not be found. Open Launch settings and choose a detected platform, or select the current forhonor.exe.",
+                "The selected launcher or For Honor installation could not be found. Open Settings and choose a detected launcher, or browse to forhonor.exe.",
                 "Launcher unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
             SetButtonsEnabled(true);
             isRunning = false;
             return;
         }
-
         launchTarget.Start();
         waitingForGameStart = true;
-        SetStatus("For Honor launch sent through " + launchTarget.DisplayName + ".");
+        SetStatus("Launch sent through " + launchTarget.DisplayName + ".");
         isRunning = false;
         SetButtonsEnabled(true);
         RefreshGameState();
@@ -299,20 +437,21 @@ internal sealed class MainForm : Form
     private async Task LaunchUbisoftAsync()
     {
         SetStatus("Finding and starting Ubisoft Connect…");
-        Task<string> findTask = Task.Factory.StartNew<string>(delegate { return GameLocator.FindUbisoftConnect(); });
-        var launcherPath = await findTask;
+        var launcherPath = await Task.Factory.StartNew(delegate { return GameLocator.FindUbisoftConnect(); });
         if (launcherPath == null)
         {
             SetStatus("Ubisoft Connect could not be found.");
-            MessageBox.Show(this,
-                "Ubisoft Connect could not be found automatically. Install or open Ubisoft Connect, then try again.",
+            MessageBox.Show(this, "Ubisoft Connect could not be found automatically.",
                 "Ubisoft Connect not found", MessageBoxButtons.OK, MessageBoxIcon.Information);
             SetButtonsEnabled(true);
             isRunning = false;
             return;
         }
-
-        Process.Start(new ProcessStartInfo(launcherPath) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(launcherPath) });
+        Process.Start(new ProcessStartInfo(launcherPath)
+        {
+            UseShellExecute = true,
+            WorkingDirectory = Path.GetDirectoryName(launcherPath)
+        });
         SetStatus("Ubisoft Connect is starting.");
         FinishAction();
     }
@@ -324,22 +463,72 @@ internal sealed class MainForm : Form
         RefreshGameState();
     }
 
-    private void OpenLaunchSettings()
+    private void ToggleSettings()
     {
-        SetStatus("Detecting Steam and Ubisoft Connect…");
-        var available = GameLocator.DetectLaunchPlatforms();
-        var current = LaunchPreferences.Load();
-        using (var dialog = new LaunchSettingsForm(current, available))
+        showingSettings = !showingSettings;
+        if (showingSettings) EnsureSettingsControls();
+        mainPanel.Visible = !showingSettings;
+        settingsPanel.Visible = showingSettings;
+        settingsButton.Text = showingSettings ? "‹" : "⚙";
+        if (showingSettings)
         {
-            if (dialog.ShowDialog(this) != DialogResult.OK)
-            {
-                RefreshGameState();
-                return;
-            }
-
-            LaunchPreferences.Save(dialog.SelectedPlatform);
-            SetStatus("Default launcher: " + PlatformDisplayName(dialog.SelectedPlatform) + ".");
+            stateLabel.Text = "Settings";
+            stateDot.ForeColor = preferences.AccentColor;
+            UpdateLaunchAvailability();
         }
+        else RefreshGameState();
+    }
+
+    private void ShowSettingsTab(bool appearance)
+    {
+        if (!settingsControlsCreated) return;
+        defaultLaunchPanel.Visible = !appearance;
+        appearancePanel.Visible = appearance;
+        var dark = Color.FromArgb(29, 45, 61);
+        defaultLaunchTab.SetColors(appearance ? dark : preferences.AccentColor,
+            appearance ? Lighten(dark, 20) : Lighten(preferences.AccentColor, 20));
+        appearanceTab.SetColors(appearance ? preferences.AccentColor : dark,
+            appearance ? Lighten(preferences.AccentColor, 20) : Lighten(dark, 20));
+    }
+
+    private async void UpdateLaunchAvailability()
+    {
+        var available = await Task.Run(delegate { return GameLocator.DetectLaunchPlatforms(); });
+        if (IsDisposed) return;
+        steamRadio.Enabled = available.SteamAvailable;
+        steamRadio.Text = available.SteamAvailable ? "Steam (detected)" : "Steam (not detected)";
+        ubisoftRadio.Enabled = available.UbisoftAvailable;
+        ubisoftRadio.Text = available.UbisoftAvailable ? "Ubisoft Connect (detected)" : "Ubisoft Connect (not detected)";
+        executableRadio.Enabled = !string.IsNullOrWhiteSpace(available.DirectGamePath);
+        executablePathLabel.Text = string.IsNullOrWhiteSpace(available.DirectGamePath)
+            ? "No executable selected. Browse below to choose forhonor.exe."
+            : available.DirectGamePath;
+    }
+
+    private void LoadSettingsControls()
+    {
+        loadingSettings = true;
+        automaticRadio.Checked = preferences.LaunchPlatform == LaunchPlatform.Automatic;
+        steamRadio.Checked = preferences.LaunchPlatform == LaunchPlatform.Steam;
+        ubisoftRadio.Checked = preferences.LaunchPlatform == LaunchPlatform.UbisoftConnect;
+        executableRadio.Checked = preferences.LaunchPlatform == LaunchPlatform.DirectExecutable;
+        trayRadio.Checked = preferences.MinimizeToTray;
+        taskbarRadio.Checked = !preferences.MinimizeToTray;
+        opacitySlider.Value = preferences.WindowOpacityPercent;
+        opacityValueLabel.Text = preferences.WindowOpacityPercent + "%";
+        accentList.SelectedIndex = (int)preferences.Accent;
+        toolTipsCheck.Checked = preferences.ToolTipsEnabled;
+        preferences.RunOnStartup = StartupRegistration.IsEnabled();
+        startupCheck.Checked = preferences.RunOnStartup;
+        loadingSettings = false;
+    }
+
+    private void SaveLaunchChoice(RadioButton source, LaunchPlatform platform)
+    {
+        if (loadingSettings || !source.Checked) return;
+        preferences.LaunchPlatform = platform;
+        SavePreferences();
+        SetStatus("Default launcher: " + PlatformDisplayName(platform) + ".");
     }
 
     private static string PlatformDisplayName(LaunchPlatform platform)
@@ -348,12 +537,12 @@ internal sealed class MainForm : Form
         {
             case LaunchPlatform.Steam: return "Steam";
             case LaunchPlatform.UbisoftConnect: return "Ubisoft Connect";
-            case LaunchPlatform.DirectExecutable: return "direct executable";
+            case LaunchPlatform.DirectExecutable: return "saved executable";
             default: return "Automatic";
         }
     }
 
-    private void ChooseGameLocation()
+    private void ChooseGameLocation(bool selectAsDefault)
     {
         using (var dialog = new OpenFileDialog
         {
@@ -365,114 +554,218 @@ internal sealed class MainForm : Form
         {
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             GameLocator.Save(dialog.FileName);
+            executablePathLabel.Text = dialog.FileName;
+            executableRadio.Enabled = true;
+            if (selectAsDefault)
+            {
+                executableRadio.Checked = true;
+                preferences.LaunchPlatform = LaunchPlatform.DirectExecutable;
+                SavePreferences();
+            }
             SetStatus("Game location saved.");
         }
     }
 
+    private void ApplyAppearance()
+    {
+        var accent = preferences.AccentColor;
+        if (opacitySlider != null) opacitySlider.AccentColor = accent;
+        if (showingSettings) stateDot.ForeColor = accent;
+        if (appearancePanel != null) ShowSettingsTab(appearancePanel.Visible);
+        Invalidate();
+    }
+
+    private void ConfigureToolTips()
+    {
+        toolTips.AutomaticDelay = 350;
+        toolTips.AutoPopDelay = 6000;
+        toolTips.ShowAlways = true;
+        toolTips.Active = preferences.ToolTipsEnabled;
+        toolTips.SetToolTip(settingsButton, "Open appearance and default-launch settings.");
+        toolTips.SetToolTip(overlayButton, "Move controls onto the screen where For Honor is running.");
+        toolTips.SetToolTip(minimizeButton, "Minimize using the behavior selected in Appearance.");
+        toolTips.SetToolTip(closeButton, "Start or stop For Honor.");
+        toolTips.SetToolTip(restartButton, "Close For Honor and launch it again.");
+        toolTips.SetToolTip(ubisoftToggleButton, "Start Ubisoft Connect, or stop it when it is running.");
+        toolTips.SetToolTip(ubisoftRestartButton, "Stop and reopen Ubisoft Connect.");
+        toolTips.SetToolTip(cleanRestartButton, "Stop the game, anti-cheat, and Ubisoft, then launch the game.");
+    }
+
+    private void ConfigureSettingsToolTips()
+    {
+        toolTips.SetToolTip(opacitySlider, "Adjust the transparency of the app window.");
+        toolTips.SetToolTip(startupCheck, "Try Hard mode launches Quick Actions automatically when you sign in to Windows.");
+    }
+
+    private void SavePreferences()
+    {
+        try { preferences.Save(); }
+        catch (IOException) { SetStatus("Settings could not be saved."); }
+        catch (UnauthorizedAccessException) { SetStatus("Settings could not be saved."); }
+    }
+
+    private ContextMenuStrip CreateTrayMenu()
+    {
+        var menu = new ContextMenuStrip();
+        trayGameToggleItem = new ToolStripMenuItem("Open For Honor");
+        trayGameRestartItem = new ToolStripMenuItem("Restart For Honor");
+        trayUbisoftToggleItem = new ToolStripMenuItem("Start Ubisoft");
+        trayUbisoftRestartItem = new ToolStripMenuItem("Restart Ubisoft");
+
+        trayGameToggleItem.Click += async delegate
+        {
+            await RunActionAsync(gameIsRunning ? ActionKind.Close : ActionKind.Open);
+        };
+        trayGameRestartItem.Click += async delegate { await RunActionAsync(ActionKind.Restart); };
+        trayUbisoftToggleItem.Click += async delegate { await RunActionAsync(ActionKind.UbisoftToggle); };
+        trayUbisoftRestartItem.Click += async delegate { await RunActionAsync(ActionKind.UbisoftRestart); };
+
+        menu.Items.Add(trayGameToggleItem);
+        menu.Items.Add(trayGameRestartItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(trayUbisoftToggleItem);
+        menu.Items.Add(trayUbisoftRestartItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Open Quick Actions", null, delegate { RestoreMainApplication(); });
+        menu.Items.Add("Settings", null, delegate
+        {
+            RestoreMainApplication();
+            if (!showingSettings) ToggleSettings();
+        });
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit", null, delegate { BeginFadeOut(); });
+        menu.Opening += delegate { UpdateTrayMenu(); };
+        return menu;
+    }
+
+    private void UpdateTrayMenu()
+    {
+        if (trayGameToggleItem == null) return;
+        trayGameToggleItem.Text = gameIsRunning ? "Close For Honor" : "Open For Honor";
+        trayGameRestartItem.Enabled = gameIsRunning && !isRunning;
+        trayUbisoftToggleItem.Text = displayedUbisoftRunning == true ? "Stop Ubisoft" : "Start Ubisoft";
+        trayGameToggleItem.Enabled = !isRunning;
+        trayUbisoftToggleItem.Enabled = !isRunning;
+        trayUbisoftRestartItem.Enabled = !isRunning;
+        if (trayIcon != null)
+            trayIcon.Text = gameIsRunning ? "For Honor is running" : "For Honor Quick Actions";
+    }
+
     private void SetStatus(string text)
     {
-        statusLabel.Text = text;
+        if (!showingSettings) stateLabel.Text = text;
     }
 
     private void SetButtonsEnabled(bool enabled)
     {
         closeButton.Enabled = enabled;
-        restartButton.Enabled = enabled;
+        restartButton.Enabled = enabled && gameIsRunning;
+        ubisoftToggleButton.Enabled = enabled;
         ubisoftRestartButton.Enabled = enabled;
         cleanRestartButton.Enabled = enabled;
-        locateButton.Enabled = enabled;
         settingsButton.Enabled = enabled;
         overlayButton.Enabled = enabled && gameIsRunning && forHonorScreen != null;
     }
 
-    private void RefreshGameState()
+    private async void RefreshGameState()
     {
-        if (isRunning) return;
+        if (isRunning || stateRefreshPending) return;
+        stateRefreshPending = true;
+        GameStateSnapshot snapshot;
+        try
+        {
+            snapshot = await Task.Run(delegate
+            {
+                var running = ProcessActions.IsForHonorRunning();
+                return new GameStateSnapshot
+                {
+                    GameRunning = running,
+                    UbisoftRunning = ProcessActions.IsUbisoftRunning(),
+                    GameScreen = running ? ProcessActions.FindForHonorScreen() : null
+                };
+            });
+        }
+        finally { stateRefreshPending = false; }
+        if (IsDisposed) return;
 
-        gameIsRunning = ProcessActions.IsForHonorRunning();
+        gameIsRunning = snapshot.GameRunning;
+        forHonorScreen = snapshot.GameScreen;
+        if (displayedUbisoftRunning != snapshot.UbisoftRunning)
+        {
+            ubisoftToggleButton.Text = snapshot.UbisoftRunning ? "Stop Ubisoft" : "Start Ubisoft";
+            displayedUbisoftRunning = snapshot.UbisoftRunning;
+        }
+        UpdateTrayMenu();
+
         if (gameIsRunning)
         {
-            forHonorScreen = ProcessActions.FindForHonorScreen();
-            closeButton.Text = "Close For Honor";
-            closeButton.BackColor = Color.FromArgb(165, 58, 58);
-            closeButton.Location = new Point(28, 110);
-            closeButton.Visible = true;
-            restartButton.Visible = true;
-            ubisoftRestartButton.Visible = false;
+            if (displayedGameRunning != true)
+            {
+                closeButton.Text = "Close For Honor";
+                closeButton.SetColors(Color.FromArgb(165, 58, 58), Color.FromArgb(185, 78, 78));
+                displayedGameRunning = true;
+            }
+            restartButton.Enabled = true;
             cleanRestartButton.Text = "Clean restart (game + Ubisoft)";
-            cleanRestartButton.Location = new Point(28, 216);
             var gameWindowReady = forHonorScreen != null;
             if (gameWindowReady) waitingForGameStart = false;
-            statusLabel.Text = gameWindowReady
-                ? "For Honor is running."
-                : "For Honor is starting. Waiting for its game window…";
+            if (!showingSettings)
+            {
+                stateLabel.Text = gameWindowReady ? "For Honor is running" : "For Honor is starting";
+                stateDot.ForeColor = gameWindowReady ? Color.FromArgb(59, 223, 105) : Color.FromArgb(236, 183, 59);
+            }
             overlayButton.Visible = true;
             overlayButton.Enabled = gameWindowReady;
-
             if (gameOverlay != null && gameOverlay.Visible)
             {
                 if (forHonorScreen == null) gameOverlay.Hide();
                 else gameOverlay.ShowOnScreen(forHonorScreen);
             }
-            else if (gameWindowReady && !overlayShownForCurrentGame)
-            {
-                // The overlay follows the actual game window, rather than the
-                // short-lived launcher/splash phase.
-                ShowGameOverlay();
-            }
-            else if (gameWindowReady && overlayShownForCurrentGame && WindowState == FormWindowState.Minimized)
-            {
-                // Recover the overlay after a temporary display-mode or monitor
-                // change without reopening it after the player chose Return.
-                ShowGameOverlay();
-            }
+            else if (gameWindowReady && !overlayShownForCurrentGame) ShowGameOverlay();
+            else if (gameWindowReady && overlayShownForCurrentGame && WindowState == FormWindowState.Minimized) ShowGameOverlay();
         }
         else
         {
             forHonorScreen = null;
             overlayShownForCurrentGame = false;
-            closeButton.Text = "Open For Honor";
-            closeButton.BackColor = Color.FromArgb(51, 125, 86);
-            closeButton.Location = new Point(28, 110);
-            closeButton.Visible = true;
-            restartButton.Visible = false;
-            ubisoftRestartButton.Visible = true;
-            ubisoftRestartButton.Location = new Point(28, 163);
+            if (displayedGameRunning != false)
+            {
+                closeButton.Text = "Open For Honor";
+                closeButton.SetColors(Color.FromArgb(51, 125, 86), Color.FromArgb(71, 145, 106));
+                displayedGameRunning = false;
+            }
+            restartButton.Enabled = false;
             cleanRestartButton.Text = "Clean restart (Ubisoft + open game)";
-            cleanRestartButton.Location = new Point(28, 216);
-            statusLabel.Text = waitingForGameStart
-                ? "For Honor launch sent. Waiting for the game…"
-                : "For Honor is not running.";
+            if (!showingSettings)
+            {
+                stateLabel.Text = waitingForGameStart ? "For Honor is starting" : "For Honor is not running";
+                stateDot.ForeColor = waitingForGameStart
+                    ? Color.FromArgb(236, 183, 59)
+                    : Color.FromArgb(117, 128, 145);
+            }
             overlayButton.Visible = false;
             if (gameOverlay != null && gameOverlay.Visible) RestoreMainApplication();
         }
     }
 
+    private sealed class GameStateSnapshot
+    {
+        public bool GameRunning;
+        public bool UbisoftRunning;
+        public Screen GameScreen;
+    }
+
     private void ToggleGameOverlay()
     {
-        forHonorScreen = ProcessActions.FindForHonorScreen();
-        if (forHonorScreen == null)
-        {
-            SetStatus("Waiting for For Honor's game window…");
-            return;
-        }
-
-        if (gameOverlay != null && gameOverlay.Visible)
-        {
-            RestoreMainApplication();
-            return;
-        }
-
+        if (forHonorScreen == null) { SetStatus("Waiting for For Honor's game window…"); return; }
+        if (gameOverlay != null && gameOverlay.Visible) { RestoreMainApplication(); return; }
         ShowGameOverlay();
     }
 
     private void ShowGameOverlay()
     {
         if (forHonorScreen == null) return;
-
-        if (gameOverlay == null)
-            gameOverlay = new GameOverlay(RunOverlayAction, RestoreMainApplication);
-
+        if (gameOverlay == null) gameOverlay = new GameOverlay(RunOverlayAction, RestoreMainApplication);
         gameOverlay.ShowOnScreen(forHonorScreen);
         overlayShownForCurrentGame = true;
         WindowState = FormWindowState.Minimized;
@@ -488,8 +781,8 @@ internal sealed class MainForm : Form
     private void RestoreMainApplication()
     {
         if (gameOverlay != null) gameOverlay.Hide();
-        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Show();
+        WindowState = FormWindowState.Normal;
         Activate();
         BringToFront();
     }
@@ -505,17 +798,26 @@ internal sealed class MainForm : Form
     {
         if (isFadingOut) return;
         isFadingOut = true;
+        Show();
+        WindowState = FormWindowState.Normal;
         closeAppButton.Enabled = false;
         gameStateTimer.Stop();
         if (gameOverlay != null) gameOverlay.Hide();
-
-        for (var opacity = 1.0; opacity > 0.05; opacity -= 0.10)
+        for (var opacity = Opacity; opacity > 0.05; opacity -= 0.10)
         {
             Opacity = opacity;
             await Task.Delay(16);
         }
         Opacity = 0;
+        trayIcon.Visible = false;
         Close();
+    }
+
+    protected override void OnPaint(PaintEventArgs args)
+    {
+        base.OnPaint(args);
+        using (var pen = new Pen(Color.FromArgb(100, preferences.AccentColor), 1F))
+            args.Graphics.DrawRectangle(pen, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs args)
@@ -526,10 +828,18 @@ internal sealed class MainForm : Form
             BeginFadeOut();
             return;
         }
+        trayIcon.Visible = false;
+        trayIcon.Dispose();
         if (gameOverlay != null) gameOverlay.Dispose();
         base.OnFormClosing(args);
     }
 
-    internal enum ActionKind { Close, Open, Restart, UbisoftRestart, CleanRestart }
+
+    private static Color Lighten(Color color, int amount)
+    {
+        return Color.FromArgb(Math.Min(255, color.R + amount), Math.Min(255, color.G + amount), Math.Min(255, color.B + amount));
+    }
+
+    internal enum ActionKind { Close, Open, Restart, UbisoftToggle, UbisoftRestart, CleanRestart }
 }
 }

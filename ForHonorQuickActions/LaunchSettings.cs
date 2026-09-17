@@ -1,8 +1,7 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace ForHonorQuickActions
 {
@@ -15,155 +14,246 @@ internal enum LaunchPlatform
     DirectExecutable
 }
 
-internal static class LaunchPreferences
+internal enum AccentTheme
 {
-    private static readonly string SettingsPath = Path.Combine(
+    Gold,
+    Blue,
+    Purple,
+    Emerald
+}
+
+internal sealed class AppPreferences
+{
+    private static readonly string SettingsFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "ForHonorQuickActions", "launch-platform.txt");
+        "ForHonorQuickActions");
+    private static readonly string SettingsPath = Path.Combine(SettingsFolder, "preferences.ini");
+    private static readonly string LegacyLaunchPath = Path.Combine(SettingsFolder, "launch-platform.txt");
 
-    public static LaunchPlatform Load()
+    public LaunchPlatform LaunchPlatform = LaunchPlatform.Automatic;
+    public bool MinimizeToTray = true;
+    public int WindowOpacityPercent = 96;
+    public AccentTheme Accent = AccentTheme.Gold;
+    public bool ToolTipsEnabled = true;
+    public bool RunOnStartup = false;
+
+    public Color AccentColor
     {
-        try
+        get
         {
-            LaunchPlatform platform;
-            if (File.Exists(SettingsPath) && Enum.TryParse(File.ReadAllText(SettingsPath).Trim(), true, out platform))
-                return platform;
+            switch (Accent)
+            {
+                case AccentTheme.Blue: return Color.FromArgb(45, 137, 235);
+                case AccentTheme.Purple: return Color.FromArgb(137, 77, 232);
+                case AccentTheme.Emerald: return Color.FromArgb(34, 170, 112);
+                default: return Color.FromArgb(232, 181, 54);
+            }
         }
-        catch (IOException) { }
-
-        return LaunchPlatform.Automatic;
     }
 
-    public static void Save(LaunchPlatform platform)
+    public static AppPreferences Load()
     {
-        var folder = Path.GetDirectoryName(SettingsPath);
-        Directory.CreateDirectory(folder);
-        File.WriteAllText(SettingsPath, platform.ToString());
+        var preferences = new AppPreferences();
+        try
+        {
+            if (File.Exists(SettingsPath))
+            {
+                foreach (var rawLine in File.ReadAllLines(SettingsPath))
+                {
+                    var split = rawLine.IndexOf('=');
+                    if (split <= 0) continue;
+                    var key = rawLine.Substring(0, split).Trim();
+                    var value = rawLine.Substring(split + 1).Trim();
+                    LaunchPlatform platform;
+                    AccentTheme accent;
+                    bool flag;
+                    int number;
+                    if (key == "LaunchPlatform" && Enum.TryParse(value, true, out platform)) preferences.LaunchPlatform = platform;
+                    else if (key == "MinimizeToTray" && bool.TryParse(value, out flag)) preferences.MinimizeToTray = flag;
+                    else if (key == "WindowOpacityPercent" && int.TryParse(value, out number)) preferences.WindowOpacityPercent = Math.Max(70, Math.Min(100, number));
+                    else if (key == "Accent" && Enum.TryParse(value, true, out accent)) preferences.Accent = accent;
+                    else if (key == "ToolTipsEnabled" && bool.TryParse(value, out flag)) preferences.ToolTipsEnabled = flag;
+                    else if (key == "RunOnStartup" && bool.TryParse(value, out flag)) preferences.RunOnStartup = flag;
+                }
+                return preferences;
+            }
+
+            LaunchPlatform legacyPlatform;
+            if (File.Exists(LegacyLaunchPath) && Enum.TryParse(File.ReadAllText(LegacyLaunchPath).Trim(), true, out legacyPlatform))
+                preferences.LaunchPlatform = legacyPlatform;
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return preferences;
+    }
+
+    public void Save()
+    {
+        Directory.CreateDirectory(SettingsFolder);
+        File.WriteAllLines(SettingsPath, new[]
+        {
+            "LaunchPlatform=" + LaunchPlatform,
+            "MinimizeToTray=" + MinimizeToTray,
+            "WindowOpacityPercent=" + WindowOpacityPercent,
+            "Accent=" + Accent,
+            "ToolTipsEnabled=" + ToolTipsEnabled,
+            "RunOnStartup=" + RunOnStartup
+        });
     }
 }
 
-internal sealed class LaunchSettingsForm : Form
+internal static class StartupRegistration
 {
-    private readonly ComboBox platformList;
-    private readonly Label detailsLabel;
-    private readonly List<PlatformChoice> choices = new List<PlatformChoice>();
+    private const string RunKeyPath = @"SoftwareMicrosoftWindowsCurrentVersionRun";
+    private const string ValueName = "ForHonorQuickActions";
 
-    public LaunchPlatform SelectedPlatform { get; private set; }
-
-    public LaunchSettingsForm(LaunchPlatform current, LaunchPlatformAvailability available)
+    public static bool IsEnabled()
     {
-        Text = "Launch settings";
-        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-        StartPosition = FormStartPosition.CenterParent;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        MinimizeBox = false;
-        ShowInTaskbar = false;
-        ClientSize = new Size(520, 245);
-        BackColor = Color.FromArgb(19, 22, 29);
-        ForeColor = Color.White;
-        Font = new Font("Segoe UI", 10F);
-
-        var title = new Label
+        try
         {
-            Text = "DEFAULT GAME LAUNCHER",
-            Font = new Font("Segoe UI Semibold", 15F),
-            ForeColor = Color.White,
-            Location = new Point(24, 20),
-            Size = new Size(472, 32)
-        };
-        var explanation = new Label
-        {
-            Text = "Choose the platform that owns your current For Honor installation.",
-            ForeColor = Color.FromArgb(165, 174, 188),
-            Location = new Point(26, 55),
-            Size = new Size(468, 24)
-        };
-
-        platformList = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Location = new Point(27, 88),
-            Size = new Size(466, 30)
-        };
-        AddChoice(LaunchPlatform.Automatic, "Automatic", "Uses a detected platform first, then the saved game executable.");
-        if (available.SteamAvailable)
-            AddChoice(LaunchPlatform.Steam, "Steam (detected)", available.SteamGamePath);
-        if (available.UbisoftAvailable)
-            AddChoice(LaunchPlatform.UbisoftConnect, "Ubisoft Connect (detected)", available.UbisoftGamePath);
-        if (!string.IsNullOrWhiteSpace(available.DirectGamePath))
-            AddChoice(LaunchPlatform.DirectExecutable, "Direct executable", available.DirectGamePath);
-
-        detailsLabel = new Label
-        {
-            ForeColor = Color.FromArgb(165, 174, 188),
-            Location = new Point(28, 127),
-            Size = new Size(464, 44),
-            AutoEllipsis = true
-        };
-
-        var saveButton = new Button
-        {
-            Text = "Save default",
-            DialogResult = DialogResult.OK,
-            BackColor = Color.FromArgb(50, 101, 161),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Location = new Point(280, 190),
-            Size = new Size(104, 34)
-        };
-        saveButton.FlatAppearance.BorderSize = 0;
-        var cancelButton = new Button
-        {
-            Text = "Cancel",
-            DialogResult = DialogResult.Cancel,
-            BackColor = Color.FromArgb(52, 58, 70),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Location = new Point(390, 190),
-            Size = new Size(104, 34)
-        };
-        cancelButton.FlatAppearance.BorderSize = 0;
-
-        platformList.SelectedIndexChanged += (sender, args) => UpdateSelection();
-        Controls.AddRange(new Control[] { title, explanation, platformList, detailsLabel, saveButton, cancelButton });
-        AcceptButton = saveButton;
-        CancelButton = cancelButton;
-
-        var selectedIndex = choices.FindIndex(choice => choice.Platform == current);
-        platformList.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
-    }
-
-    private void AddChoice(LaunchPlatform platform, string name, string details)
-    {
-        var choice = new PlatformChoice(platform, name, details);
-        choices.Add(choice);
-        platformList.Items.Add(choice);
-    }
-
-    private void UpdateSelection()
-    {
-        var choice = platformList.SelectedItem as PlatformChoice;
-        if (choice == null) return;
-        SelectedPlatform = choice.Platform;
-        detailsLabel.Text = choice.Details;
-    }
-
-    private sealed class PlatformChoice
-    {
-        public readonly LaunchPlatform Platform;
-        public readonly string Details;
-        private readonly string name;
-
-        public PlatformChoice(LaunchPlatform platform, string name, string details)
-        {
-            Platform = platform;
-            this.name = name;
-            Details = details;
+            using (var key = Registry.CurrentUser.OpenSubKey(RunKeyPath))
+            {
+                var value = key == null ? null : key.GetValue(ValueName) as string;
+                return string.Equals(value, StartupCommand(), StringComparison.OrdinalIgnoreCase);
+            }
         }
-
-        public override string ToString() { return name; }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+        catch (System.Security.SecurityException) { return false; }
     }
+
+    public static void SetEnabled(bool enabled)
+    {
+        using (var key = Registry.CurrentUser.CreateSubKey(RunKeyPath))
+        {
+            if (key == null) throw new InvalidOperationException("Windows startup settings could not be opened.");
+            if (enabled) key.SetValue(ValueName, StartupCommand(), RegistryValueKind.String);
+            else key.DeleteValue(ValueName, false);
+        }
+    }
+
+    private static string StartupCommand()
+    {
+        return ((char)34) + System.Windows.Forms.Application.ExecutablePath + ((char)34) + " --startup";
+    }
+}
+
+internal static class LaunchPreferences
+{
+    public static LaunchPlatform Load() { return AppPreferences.Load().LaunchPlatform; }
+
+    public static void Save(LaunchPlatform platform)
+    {
+        var preferences = AppPreferences.Load();
+        preferences.LaunchPlatform = platform;
+        preferences.Save();
+    }
+}
+
+internal sealed class DarkSlider : System.Windows.Forms.Control
+{
+    private int sliderValue = 100;
+    private Color accentColor = Color.FromArgb(232, 181, 54);
+
+    public event EventHandler ValueChanged;
+    public int Minimum { get; set; }
+    public int Maximum { get; set; }
+
+    public int Value
+    {
+        get { return sliderValue; }
+        set
+        {
+            var next = Math.Max(Minimum, Math.Min(Maximum, value));
+            if (sliderValue == next) return;
+            sliderValue = next;
+            Invalidate();
+            if (ValueChanged != null) ValueChanged(this, EventArgs.Empty);
+        }
+    }
+
+    public Color AccentColor
+    {
+        get { return accentColor; }
+        set { accentColor = value; Invalidate(); }
+    }
+
+    public DarkSlider()
+    {
+        Minimum = 70;
+        Maximum = 100;
+        Height = 28;
+        BackColor = Color.FromArgb(18, 30, 43);
+        SetStyle(System.Windows.Forms.ControlStyles.AllPaintingInWmPaint |
+            System.Windows.Forms.ControlStyles.OptimizedDoubleBuffer |
+            System.Windows.Forms.ControlStyles.UserPaint, true);
+    }
+
+    protected override void OnPaint(System.Windows.Forms.PaintEventArgs args)
+    {
+        base.OnPaint(args);
+        var middle = Height / 2;
+        var left = 8;
+        var right = Width - 8;
+        var ratio = Maximum == Minimum ? 0F : (sliderValue - Minimum) / (float)(Maximum - Minimum);
+        var thumbX = left + (int)((right - left) * ratio);
+        using (var track = new SolidBrush(Color.FromArgb(58, 73, 89)))
+            args.Graphics.FillRectangle(track, left, middle - 2, right - left, 4);
+        using (var fill = new SolidBrush(accentColor))
+            args.Graphics.FillRectangle(fill, left, middle - 2, Math.Max(0, thumbX - left), 4);
+        using (var thumb = new SolidBrush(Lighten(accentColor, 35)))
+            args.Graphics.FillEllipse(thumb, thumbX - 7, middle - 7, 14, 14);
+    }
+
+    protected override void OnMouseDown(System.Windows.Forms.MouseEventArgs args)
+    {
+        base.OnMouseDown(args);
+        SetFromMouse(args.X);
+    }
+
+    protected override void OnMouseMove(System.Windows.Forms.MouseEventArgs args)
+    {
+        base.OnMouseMove(args);
+        if ((args.Button & System.Windows.Forms.MouseButtons.Left) != 0) SetFromMouse(args.X);
+    }
+
+    private void SetFromMouse(int x)
+    {
+        var width = Math.Max(1, Width - 16);
+        var ratio = Math.Max(0F, Math.Min(1F, (x - 8) / (float)width));
+        Value = Minimum + (int)Math.Round((Maximum - Minimum) * ratio);
+    }
+
+    private static Color Lighten(Color color, int amount)
+    {
+        return Color.FromArgb(Math.Min(255, color.R + amount), Math.Min(255, color.G + amount), Math.Min(255, color.B + amount));
+    }
+}
+
+internal sealed class AnimatedButton : System.Windows.Forms.Button
+{
+    public AnimatedButton()
+    {
+        FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+        FlatAppearance.BorderSize = 1;
+        Cursor = System.Windows.Forms.Cursors.Hand;
+    }
+
+    public void SetColors(Color normal, Color hover)
+    {
+        BackColor = normal;
+        FlatAppearance.MouseOverBackColor = hover;
+        FlatAppearance.MouseDownBackColor = Blend(normal, Color.Black, 0.18f);
+    }
+
+    private static Color Blend(Color from, Color to, float amount)
+    {
+        return Color.FromArgb(
+            (int)(from.R + (to.R - from.R) * amount),
+            (int)(from.G + (to.G - from.G) * amount),
+            (int)(from.B + (to.B - from.B) * amount));
+    }
+
 }
 
 }

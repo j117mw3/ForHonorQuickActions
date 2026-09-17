@@ -47,6 +47,12 @@ internal static class ProcessActions
 
     public static readonly string[] GameProcesses = { "forhonor" };
 
+    public static readonly string[] UbisoftProcesses =
+    {
+        "upc", "UbisoftGameLauncher", "UbisoftGameLauncher64",
+        "UbisoftConnect", "UbisoftConnectWebCore", "UplayWebCore"
+    };
+
     // These cover the process names used by Ubisoft Connect and both generations of Easy Anti-Cheat.
     public static readonly string[] CleanRestartProcesses =
     {
@@ -114,6 +120,11 @@ internal static class ProcessActions
         {
             return false;
         }
+    }
+
+    public static bool IsUbisoftRunning()
+    {
+        return AreAnyRunning(UbisoftProcesses);
     }
 
     public static Screen FindForHonorScreen()

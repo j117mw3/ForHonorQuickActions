@@ -71,6 +71,8 @@ internal static class GameLocator
     private static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "ForHonorQuickActions", "settings.json");
+    private static readonly object AvailabilityCacheLock = new object();
+    private static LaunchPlatformAvailability cachedAvailability;
 
     public static string Find()
     {
@@ -94,21 +96,24 @@ internal static class GameLocator
 
     public static LaunchPlatformAvailability DetectLaunchPlatforms()
     {
-        var steamClient = FindSteamClient();
-        var steamGame = FindSteamGame();
-        var ubisoftClient = FindUbisoftConnect();
-        var ubisoftGame = FindUbisoftGameRegistration();
-        var directGame = Find();
-
-        return new LaunchPlatformAvailability
+        lock (AvailabilityCacheLock)
         {
-            SteamClientPath = steamClient,
-            SteamGamePath = steamGame,
-            UbisoftClientPath = ubisoftClient,
-            UbisoftGamePath = ubisoftGame == null ? null : ubisoftGame.GamePath,
-            UbisoftProductId = ubisoftGame == null ? null : ubisoftGame.ProductId,
-            DirectGamePath = directGame
-        };
+            if (cachedAvailability != null) return cachedAvailability;
+            var steamClient = FindSteamClient();
+            var steamGame = FindSteamGame();
+            var ubisoftClient = FindUbisoftConnect();
+            var ubisoftGame = FindUbisoftGameRegistration();
+            cachedAvailability = new LaunchPlatformAvailability
+            {
+                SteamClientPath = steamClient,
+                SteamGamePath = steamGame,
+                UbisoftClientPath = ubisoftClient,
+                UbisoftGamePath = ubisoftGame == null ? null : ubisoftGame.GamePath,
+                UbisoftProductId = ubisoftGame == null ? null : ubisoftGame.ProductId,
+                DirectGamePath = Find()
+            };
+            return cachedAvailability;
+        }
     }
 
     public static GameLaunchTarget FindLaunchTarget(LaunchPlatform platform)
@@ -149,6 +154,7 @@ internal static class GameLocator
         var folder = Path.GetDirectoryName(SettingsPath);
         Directory.CreateDirectory(folder);
         File.WriteAllText(SettingsPath, gamePath);
+        lock (AvailabilityCacheLock) cachedAvailability = null;
     }
 
     private static string LoadSavedPath()

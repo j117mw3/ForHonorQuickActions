@@ -16,9 +16,7 @@ internal sealed class GameOverlay : Form
     private readonly Button restartButton;
     private readonly Button cleanRestartButton;
     private readonly Button returnButton;
-    private readonly Timer resizeTimer;
     private readonly Timer collapseTimer;
-    private int targetWidth;
     private int screenRight;
     private int screenTop;
 
@@ -38,8 +36,6 @@ internal sealed class GameOverlay : Form
         returnButton = MakeButton("Return to Quick Actions", Color.FromArgb(70, 77, 91), returnToApp);
         Controls.AddRange(new Control[] { closeButton, restartButton, cleanRestartButton, returnButton });
 
-        resizeTimer = new Timer { Interval = 12 };
-        resizeTimer.Tick += (sender, args) => AnimateWidth();
         collapseTimer = new Timer { Interval = 300 };
         collapseTimer.Tick += (sender, args) => CollapseIfPointerLeft();
 
@@ -68,8 +64,6 @@ internal sealed class GameOverlay : Form
         var width = Visible ? ClientSize.Width : CollapsedWidth;
         if (!Visible)
         {
-            targetWidth = CollapsedWidth;
-            resizeTimer.Stop();
             collapseTimer.Stop();
         }
 
@@ -108,8 +102,8 @@ internal sealed class GameOverlay : Form
     private void Expand()
     {
         collapseTimer.Stop();
-        targetWidth = ExpandedWidth;
-        if (!resizeTimer.Enabled) resizeTimer.Start();
+        SetOverlayBounds(ExpandedWidth);
+        UpdateButtonLayout(ExpandedWidth);
     }
 
     private void ScheduleCollapse()
@@ -127,26 +121,8 @@ internal sealed class GameOverlay : Form
         }
 
         collapseTimer.Stop();
-        targetWidth = CollapsedWidth;
-        if (!resizeTimer.Enabled) resizeTimer.Start();
-    }
-
-    private void AnimateWidth()
-    {
-        var width = ClientSize.Width;
-        if (width == targetWidth)
-        {
-            resizeTimer.Stop();
-            return;
-        }
-
-        var step = targetWidth > width ? 22 : -22;
-        var nextWidth = width + step;
-        if ((step > 0 && nextWidth > targetWidth) || (step < 0 && nextWidth < targetWidth))
-            nextWidth = targetWidth;
-
-        SetOverlayBounds(nextWidth);
-        UpdateButtonLayout(nextWidth);
+        SetOverlayBounds(CollapsedWidth);
+        UpdateButtonLayout(CollapsedWidth);
     }
 
     private void SetOverlayBounds(int width)
