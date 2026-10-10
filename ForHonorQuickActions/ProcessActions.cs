@@ -61,51 +61,9 @@ internal static class ProcessActions
         "UbisoftConnect", "UbisoftConnectWebCore", "UplayWebCore"
     };
 
-    public static bool Stop(IEnumerable<string> processNames)
+    public static StopResult Stop(IEnumerable<string> processNames)
     {
-        var names = processNames.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var stopwatch = Stopwatch.StartNew();
-        var lastTargetSeenAt = stopwatch.ElapsedMilliseconds;
-
-        // Kill() is asynchronous, and launchers can briefly recreate a process
-        // while they are shutting down. Keep sweeping until every requested name
-        // has stayed absent for a short quiet period instead of trusting one
-        // process snapshot.
-        while (stopwatch.ElapsedMilliseconds < StopTimeoutMilliseconds)
-        {
-            var foundTarget = false;
-            foreach (var name in names)
-            {
-                Process[] processes;
-                try { processes = Process.GetProcessesByName(name); }
-                catch (System.ComponentModel.Win32Exception) { continue; }
-
-                if (processes.Length > 0)
-                {
-                    foundTarget = true;
-                    lastTargetSeenAt = stopwatch.ElapsedMilliseconds;
-                }
-
-                foreach (var process in processes)
-                {
-                    try
-                    {
-                        if (!process.HasExited) process.Kill();
-                        process.WaitForExit(750);
-                    }
-                    catch (InvalidOperationException) { /* It exited before we could stop it. */ }
-                    catch (System.ComponentModel.Win32Exception) { /* It is protected or already gone. */ }
-                    finally { process.Dispose(); }
-                }
-            }
-
-            if (!foundTarget && stopwatch.ElapsedMilliseconds - lastTargetSeenAt >= QuietPeriodMilliseconds)
-                return true;
-
-            Thread.Sleep(100);
-        }
-
-        return !AreAnyRunning(names);
+        return ProcessStopper.Stop(processNames, StopTimeoutMilliseconds, QuietPeriodMilliseconds);
     }
 
     public static bool IsForHonorRunning()

@@ -55,14 +55,15 @@ internal sealed class GameOverlay : Form
         }
     }
 
-    public void ShowOnScreen(Screen screen)
+    public void ShowOnScreen(Screen screen, bool startCollapsed = false)
     {
         var bounds = screen.Bounds;
         screenRight = bounds.Right - EdgeMargin;
         screenTop = bounds.Top + EdgeMargin;
 
-        var width = Visible ? ClientSize.Width : CollapsedWidth;
-        if (!Visible)
+        var shouldStartCollapsed = startCollapsed || !Visible;
+        var width = shouldStartCollapsed ? CollapsedWidth : ClientSize.Width;
+        if (shouldStartCollapsed)
         {
             collapseTimer.Stop();
         }

@@ -1,0 +1,7 @@
+{
+  "name": "for-honor-recovery-reports",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "vitest run", "check": "tsc --noEmit", "deploy": "wrangler deploy", "dry-run": "wrangler deploy --dry-run" },
+  "devDependencies": { "@cloudflare/workers-types": "^5.20261006.1", "typescript": "^5.0.0", "vitest": "^3.0.0", "wrangler": "^4.0.0" }
+}

@@ -104,7 +104,7 @@ internal sealed class AppPreferences
 
 internal static class StartupRegistration
 {
-    private const string RunKeyPath = @"SoftwareMicrosoftWindowsCurrentVersionRun";
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "ForHonorQuickActions";
 
     public static bool IsEnabled()

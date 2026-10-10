@@ -1,0 +1,9 @@
+{
+  "name": "for-honor-recovery-reports",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-10",
+  "observability": { "enabled": false },
+  "vars": { "REPORTING_ENABLED": "true", "GITHUB_APP_ID": "5265921", "GITHUB_INSTALLATION_ID": "170039435" },
+  "durable_objects": { "bindings": [{ "name": "REPORTS", "class_name": "ReportCoordinator" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReportCoordinator"] }]
+}

@@ -2,13 +2,14 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace ForHonorQuickActions
 {
-internal sealed class MainForm : Form
+internal sealed partial class MainForm : Form
 {
     private readonly AppPreferences preferences;
     private readonly ToolTip toolTips = new ToolTip();
@@ -16,7 +17,7 @@ internal sealed class MainForm : Form
     private Label stateDot, stateLabel, opacityValueLabel, executablePathLabel;
     private AnimatedButton closeButton, restartButton, ubisoftToggleButton, ubisoftRestartButton;
     private AnimatedButton cleanRestartButton, settingsButton, overlayButton;
-    private AnimatedButton minimizeButton, closeAppButton, defaultLaunchTab, appearanceTab;
+    private AnimatedButton closeAppButton, defaultLaunchTab, appearanceTab;
     private RadioButton automaticRadio, steamRadio, ubisoftRadio, executableRadio, trayRadio, taskbarRadio;
     private DarkSlider opacitySlider;
     private ComboBox accentList;
@@ -30,6 +31,7 @@ internal sealed class MainForm : Form
     private bool isRunning, gameIsRunning, waitingForGameStart, overlayShownForCurrentGame;
     private bool isFadingOut, showingSettings, loadingSettings, stateRefreshPending;
     private bool settingsControlsCreated;
+    private bool startupBackgroundMode;
     private bool? displayedGameRunning, displayedUbisoftRunning;
 
     private const int WmNclButtonDown = 0xA1;
@@ -39,6 +41,7 @@ internal sealed class MainForm : Form
 
     public MainForm(bool startMinimized = false)
     {
+        startupBackgroundMode = startMinimized;
         preferences = AppPreferences.Load();
         Text = "For Honor Quick Actions";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -67,7 +70,10 @@ internal sealed class MainForm : Form
             Visible = true,
             ContextMenuStrip = CreateTrayMenu()
         };
-        trayIcon.DoubleClick += delegate { RestoreMainApplication(); };
+        trayIcon.MouseClick += delegate(object sender, MouseEventArgs args)
+        {
+            if (args.Button == MouseButtons.Left) RestoreMainApplication();
+        };
         Resize += delegate
         {
             if (WindowState == FormWindowState.Minimized && preferences.MinimizeToTray) Hide();
@@ -154,13 +160,12 @@ internal sealed class MainForm : Form
             Font = new Font("Segoe UI", 9.5F), TextAlign = ContentAlignment.MiddleLeft,
             Location = new Point(34, 3), Size = new Size(245, 38)
         };
-        settingsButton = MakeChromeButton("⚙", new Point(286, 1), 36);
+        settingsButton = MakeChromeButton("⚙", new Point(358, 1), 36);
         settingsButton.Font = new Font("Segoe UI Symbol", 12F);
         overlayButton = MakeChromeButton("↗", new Point(322, 1), 36);
-        minimizeButton = MakeChromeButton("—", new Point(358, 1), 36);
         closeAppButton = MakeChromeButton("×", new Point(394, 1), 34);
         closeAppButton.Font = new Font("Segoe UI", 16F);
-        titleBar.Controls.AddRange(new Control[] { stateDot, stateLabel, settingsButton, overlayButton, minimizeButton, closeAppButton });
+        titleBar.Controls.AddRange(new Control[] { stateDot, stateLabel, settingsButton, overlayButton, closeAppButton });
         titleBar.MouseDown += BeginWindowDrag;
         stateLabel.MouseDown += BeginWindowDrag;
     }
@@ -290,8 +295,7 @@ internal sealed class MainForm : Form
         ubisoftRestartButton.Click += async delegate { await RunActionAsync(ActionKind.UbisoftRestart); };
         cleanRestartButton.Click += async delegate { await RunActionAsync(ActionKind.CleanRestart); };
         settingsButton.Click += delegate { ToggleSettings(); };
-        minimizeButton.Click += delegate { WindowState = FormWindowState.Minimized; };
-        closeAppButton.Click += delegate { BeginFadeOut(); };
+        closeAppButton.Click += delegate { MinimizeToTray(); };
         overlayButton.Click += delegate { ToggleGameOverlay(); };
     }
 
@@ -349,6 +353,9 @@ internal sealed class MainForm : Form
     private async Task RunActionAsync(ActionKind action)
     {
         if (isRunning) return;
+        IncidentReporting.Record("action", action.ToString());
+        if ((action == ActionKind.Open || action == ActionKind.Restart || action == ActionKind.CleanRestart || action == ActionKind.Close) && HasUnresolvedGame())
+        { ShowRecovery(action); return; }
         isRunning = true;
         SetButtonsEnabled(false);
         try
@@ -357,7 +364,7 @@ internal sealed class MainForm : Form
             {
                 case ActionKind.Close:
                     SetStatus("Closing For Honor…");
-                    await StopProcessesAsync(ProcessActions.GameProcesses);
+                    if (!await StopProcessesAsync(ProcessActions.GameProcesses, action)) return;
                     SetStatus("For Honor closed.");
                     FinishAction();
                     break;
@@ -367,7 +374,7 @@ internal sealed class MainForm : Form
                     break;
                 case ActionKind.Restart:
                     SetStatus("Closing For Honor…");
-                    await StopProcessesAsync(ProcessActions.GameProcesses);
+                    if (!await StopProcessesAsync(ProcessActions.GameProcesses, action)) return;
                     await LaunchGameAsync();
                     break;
                 case ActionKind.UbisoftToggle:
@@ -375,7 +382,7 @@ internal sealed class MainForm : Form
                     if (ubisoftIsRunning)
                     {
                         SetStatus("Stopping Ubisoft Connect…");
-                        await StopProcessesAsync(ProcessActions.UbisoftProcesses);
+                        if (!await StopProcessesAsync(ProcessActions.UbisoftProcesses, action)) return;
                         SetStatus("Ubisoft Connect stopped.");
                         FinishAction();
                     }
@@ -383,12 +390,12 @@ internal sealed class MainForm : Form
                     break;
                 case ActionKind.UbisoftRestart:
                     SetStatus("Restarting Ubisoft Connect…");
-                    await StopProcessesAsync(ProcessActions.UbisoftProcesses);
+                    if (!await StopProcessesAsync(ProcessActions.UbisoftProcesses, action)) return;
                     await LaunchUbisoftAsync();
                     break;
                 case ActionKind.CleanRestart:
                     SetStatus("Closing game, anti-cheat, and Ubisoft…");
-                    await StopProcessesAsync(ProcessActions.CleanRestartProcesses);
+                    if (!await StopProcessesAsync(ProcessActions.CleanRestartProcesses, action)) return;
                     await LaunchGameAsync();
                     break;
             }
@@ -402,15 +409,26 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static async Task StopProcessesAsync(string[] processNames)
+    private async Task<bool> StopProcessesAsync(string[] processNames, ActionKind action)
     {
-        var stopped = await Task.Run(delegate { return ProcessActions.Stop(processNames); });
-        if (!stopped)
+        var result = await Task.Run(delegate { return ProcessActions.Stop(processNames); });
+        foreach (var target in result.Targets) IncidentReporting.Record("normal-termination", target.IsAlive() ? "survived" : "exited",
+            target.Pid, target.Error, result.ElapsedMilliseconds, target.Created);
+        foreach (var error in result.EnumerationErrors) IncidentReporting.Record("enumeration", "unavailable", 0, error);
+        if (result.Succeeded) { result.Dispose(); ClearUnresolved(); return true; }
+        if (result.Targets.Any(t => t.Name.Equals("forhonor", StringComparison.OrdinalIgnoreCase) && t.IsAlive()))
+        {
+            ClearUnresolved(); unresolved = result; incident = null; issueUrl = null;
+            ShowRecovery(action); return false;
+        }
+        result.Dispose();
             throw new InvalidOperationException("One or more requested processes could not be closed. Close them with Task Manager or run this app as administrator, then try again.");
     }
 
     private async Task LaunchGameAsync()
     {
+        if (ProcessActions.IsForHonorRunning())
+        { SetStatus("For Honor is already running."); FinishAction(); return; }
         SetStatus("Finding and starting For Honor…");
         var launchTarget = await Task.Factory.StartNew(delegate
         {
@@ -427,6 +445,7 @@ internal sealed class MainForm : Form
             return;
         }
         launchTarget.Start();
+        IncidentReporting.Record("launch", preferences.LaunchPlatform.ToString());
         waitingForGameStart = true;
         SetStatus("Launch sent through " + launchTarget.DisplayName + ".");
         isRunning = false;
@@ -465,6 +484,7 @@ internal sealed class MainForm : Form
 
     private void ToggleSettings()
     {
+        if (recoveryVisible) return;
         showingSettings = !showingSettings;
         if (showingSettings) EnsureSettingsControls();
         mainPanel.Visible = !showingSettings;
@@ -583,7 +603,7 @@ internal sealed class MainForm : Form
         toolTips.Active = preferences.ToolTipsEnabled;
         toolTips.SetToolTip(settingsButton, "Open appearance and default-launch settings.");
         toolTips.SetToolTip(overlayButton, "Move controls onto the screen where For Honor is running.");
-        toolTips.SetToolTip(minimizeButton, "Minimize using the behavior selected in Appearance.");
+        toolTips.SetToolTip(closeAppButton, "Minimize to the system tray.");
         toolTips.SetToolTip(closeButton, "Start or stop For Honor.");
         toolTips.SetToolTip(restartButton, "Close For Honor and launch it again.");
         toolTips.SetToolTip(ubisoftToggleButton, "Start Ubisoft Connect, or stop it when it is running.");
@@ -633,7 +653,7 @@ internal sealed class MainForm : Form
             if (!showingSettings) ToggleSettings();
         });
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, delegate { BeginFadeOut(); });
+        menu.Items.Add("Quit", null, delegate { BeginFadeOut(); });
         menu.Opening += delegate { UpdateTrayMenu(); };
         return menu;
     }
@@ -669,7 +689,7 @@ internal sealed class MainForm : Form
 
     private async void RefreshGameState()
     {
-        if (isRunning || stateRefreshPending) return;
+        if (isRunning || recoveryVisible || stateRefreshPending) return;
         stateRefreshPending = true;
         GameStateSnapshot snapshot;
         try
@@ -687,6 +707,9 @@ internal sealed class MainForm : Form
         }
         finally { stateRefreshPending = false; }
         if (IsDisposed) return;
+        if (isRunning || recoveryVisible) return;
+        if (displayedGameRunning != snapshot.GameRunning || (forHonorScreen == null) != (snapshot.GameScreen == null))
+            IncidentReporting.Record("observation", snapshot.GameScreen != null ? "window-present" : snapshot.GameRunning ? "process-present" : "absent");
 
         gameIsRunning = snapshot.GameRunning;
         forHonorScreen = snapshot.GameScreen;
@@ -704,6 +727,7 @@ internal sealed class MainForm : Form
                 closeButton.Text = "Close For Honor";
                 closeButton.SetColors(Color.FromArgb(165, 58, 58), Color.FromArgb(185, 78, 78));
                 displayedGameRunning = true;
+                if (waitingForGameStart) WindowState = FormWindowState.Minimized;
             }
             restartButton.Enabled = true;
             cleanRestartButton.Text = "Clean restart (game + Ubisoft)";
@@ -744,7 +768,8 @@ internal sealed class MainForm : Form
                     : Color.FromArgb(117, 128, 145);
             }
             overlayButton.Visible = false;
-            if (gameOverlay != null && gameOverlay.Visible) RestoreMainApplication();
+            if (gameOverlay != null && gameOverlay.Visible) gameOverlay.Hide();
+            if (startupBackgroundMode) WindowState = FormWindowState.Minimized;
         }
     }
 
@@ -766,7 +791,7 @@ internal sealed class MainForm : Form
     {
         if (forHonorScreen == null) return;
         if (gameOverlay == null) gameOverlay = new GameOverlay(RunOverlayAction, RestoreMainApplication);
-        gameOverlay.ShowOnScreen(forHonorScreen);
+        gameOverlay.ShowOnScreen(forHonorScreen, startCollapsed: true);
         overlayShownForCurrentGame = true;
         WindowState = FormWindowState.Minimized;
     }
@@ -780,11 +805,18 @@ internal sealed class MainForm : Form
 
     private void RestoreMainApplication()
     {
+        startupBackgroundMode = false;
         if (gameOverlay != null) gameOverlay.Hide();
         Show();
         WindowState = FormWindowState.Normal;
         Activate();
         BringToFront();
+    }
+
+    private void MinimizeToTray()
+    {
+        startupBackgroundMode = false;
+        Hide();
     }
 
     private void BeginWindowDrag(object sender, MouseEventArgs args)
@@ -825,11 +857,12 @@ internal sealed class MainForm : Form
         if (!isFadingOut && args.CloseReason == CloseReason.UserClosing)
         {
             args.Cancel = true;
-            BeginFadeOut();
+            MinimizeToTray();
             return;
         }
         trayIcon.Visible = false;
         trayIcon.Dispose();
+        ClearUnresolved();
         if (gameOverlay != null) gameOverlay.Dispose();
         base.OnFormClosing(args);
     }

@@ -2,6 +2,7 @@
 ForHonorQuickActions/bin/
 ForHonorQuickActions/obj/
 release/
+test-output/
 
 # Local editor and user settings
 .vs/
